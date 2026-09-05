@@ -30,22 +30,49 @@ def print_assignment(consumer, partitions):
     print('Assignment:', partitions)
 
 def process(data):
+    if data is None:
+        return
+
     try:
         processed_data = json.loads(data)
-    except JSONDecodeError:
-        return
 
-    if processed_data.get('messageType') != "bytes" or not processed_data.get('bytes'):
-        return
+        if not (raw_update_json := processed_data.get('bytes')):
+            return
 
-    byte_data = processed_data['bytes']
-    json_data = json.loads(byte_data)
+        json_data = json.loads(raw_update_json)
+
+    except (JSONDecodeError, TypeError):
+        return
 
     if 'uR' not in json_data:
         return
 
-    uR = json_data['uR']
-    print(uR.keys())
+    status = extract_train_status(json_data)
+    if status is not None:
+        print(status, end='\n\n')
+
+def extract_train_status(payload: dict) -> dict | None:
+    update = payload.get("uR")
+    if not isinstance(update, dict):
+        return None
+
+    status = update.get('TS')
+    if not isinstance(status, dict):
+        return None
+
+    locations = status.get('Location', []) # Fetch Location, failing that return empty list
+    if isinstance(locations, dict):
+        locations = [locations]
+    elif not isinstance(locations, list):
+        locations = []
+
+    return {
+        "update_origin": update.get('updateOrigin'),
+        "rid": status.get('rid'),
+        "uid": status.get('uid'),
+        "ssd": status.get('ssd'),
+        "locations": locations
+    }
 
 def main():
     consumer = Consumer(conf, logger=logger)
@@ -59,14 +86,9 @@ def main():
             if msg.error():
                 raise KafkaException(msg.error())
             else:
-                # Proper message
-                sys.stderr.write(
-                    f'%% {msg.topic()} [{msg.partition()}] at offset {msg.offset()} with key {msg.key()!s}:\n'
-                )
                 process(msg.value())
                 # Store the offset associated with msg to a local cache.
                 # Stored offsets are committed to Kafka by a background thread every 'auto.commit.interval.ms'.
-                # Explicitly storing offsets after processing gives at-least once semantics.
                 consumer.store_offsets(msg)
 
     except KeyboardInterrupt:
