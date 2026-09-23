@@ -47,12 +47,10 @@ def process(data):
     if 'uR' not in json_data:
         return
 
-    status = extract_train_status(json_data)
-    if status is not None:
-        print(status, end='\n\n')
+    return extract_train_status(json_data)
 
 def extract_train_status(payload: dict) -> dict | None:
-    update = payload.get("uR")
+    update = payload.get("uR") # Update Response
     if not isinstance(update, dict):
         return None
 
@@ -86,7 +84,8 @@ def main():
             if msg.error():
                 raise KafkaException(msg.error())
             else:
-                process(msg.value())
+                train_updates = process(msg.value())
+                print(train_updates)
                 # Store the offset associated with msg to a local cache.
                 # Stored offsets are committed to Kafka by a background thread every 'auto.commit.interval.ms'.
                 consumer.store_offsets(msg)

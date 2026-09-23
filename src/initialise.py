@@ -2,47 +2,28 @@
 This file handles setting the initial train states provided by NationalRail daily, at approx. 4am.
 Files are served via xml, containing `_ref_v4.xml` and `_v8.xml`, ref contains location references
 and the v8 contains the actual data.
-
-Ref data contains:
-    <LocationRef tpl="WIMBLDN" crs="WIM" toc="SW" locname="Wimbledon" />
-
-    <TocRef toc="EM" tocname="East Midlands Railway" url="http://www.nationalrail.co.uk/tocs_maps/tocs/EM.aspx" />
-
-    LateRunningReasons:
-        <Reason code="664" reasontext="This service has been delayed by a supermarket trolley on the track earlier today" />
-
-    CancellationReasons:
-        <Reason code="555" reasontext="This service has been cancelled because of a wartime bomb near the railway" />
-
-    <Via at="AYP" dest="LNDNBDE" loc1="WOLWCHA" loc2="GNWH" viatext="via Woolwich Arsenal &amp; Greenwich" />
-
-    <CISSource code="at12" name="Greater Anglia LICC" />
-
-    <LoadingCategories>
-      <category Code="A" Name="FewSeatsTaken" Toc="">
-        <TypicalDescription>Usually only a few seats taken</TypicalDescription>
-        <ExpectedDescription>Only a few seats taken</ExpectedDescription>
-        <Definition>Everyone will be able to find a seat</Definition>
-      </category>
-      <category Code="B" Name="PlentyOfSeats" Toc="">
-        <TypicalDescription>Usually plenty of seats available</TypicalDescription>
-        <ExpectedDescription>Plenty of seats available</ExpectedDescription>
-        <Definition>Every will be able to find a seat - groups should still be able to sit together</Definition>
-      </category>
-    </LoadingCategories>
 '''
 
+import sys
+import time
+from datetime import UTC, datetime
+
+import psycopg
 from lxml import etree
 
-loc_refs = {}
-toc_refs = {}
-late_reasons = {}
-cancellation_reasons = {}
-via = {}
-cis = {}
-loading = {}
+from db import Database
+from util import convert_to_bool
 
-def main():
+
+def fetch_ref_data():
+    loc_refs = {}
+    toc_refs = {}
+    late_reasons = {}
+    cancellation_reasons = {}
+    via = {}
+    cis = {}
+    loading = {}
+
     tree = etree.parse('data/PPTimetable_20260905020530_ref_v4.xml')
     root = tree.getroot()
 
@@ -91,6 +72,128 @@ def main():
         'loading_categories': loading
     }
 
+def get_stops(journey: etree._Element):
+    stops = []
+    cancel_reason = None
+
+    for idx, stop in enumerate(journey):
+        tag = etree.QName(stop).localname
+
+        if tag == "cancelReason":
+            cancel_reason = stop.text
+            continue
+
+        # tpl, act, planAct, can, plat, pta, ptd
+        # OR - Passenger Origin Calling Point (Where the train starts)
+        # PP - Intermediate Passing Point (What the train will go past, not stop at)
+        # IP - Intermediate Calling Location (Where the train will stop)
+        # DT - Passenger Destination Calling point (The final destination)
+
+        stop_info = {
+            'sequence': idx,
+            'tiploc': stop.get('tpl'),
+            'activities': stop.get('act'),
+            'planned_activities': stop.get('planAct'),
+            'cancelled': convert_to_bool(stop.get('can'), False),
+            'platform': stop.get('plat'),
+            'public_arrival': stop.get('pta'),
+            'public_departure': stop.get('ptd'),
+            'working_arrival': stop.get('wta'),
+            'working_departure': stop.get('wtd'),
+            'working_pass': stop.get('wtp'),
+            'location_type': tag
+        }
+
+        stops.append(stop_info)
+
+    return stops, cancel_reason
+
+def fetch_initial_journeys():
+    tree = etree.parse('data/PPTimetable_20260905020530_v8.xml')
+    root: etree._Element = tree.getroot()
+
+    journeys = {}
+    associations = {}
+
+    for child in root:
+        tag = etree.QName(child).localname
+
+        if tag == "Journey":
+            rid = child.get('rid')
+
+            stops, cancel_reason = get_stops(child)
+
+            journeys[rid] = {
+                'uid' : child.get('uid'),
+                'train_id' : child.get('trainId'),
+                'ssd' : child.get('ssd'),
+                'toc' : child.get('toc'),
+                'status' : child.get('status'),
+                'category' : child.get('trainCat'),
+                'passenger_service' : child.get('isPassengerSvc'),
+                'deleted' : child.get('deleted'),
+                'cancelled' : child.get('can'),
+                'cancel_reason' : cancel_reason,
+                'stops': stops
+            }
+
+        elif tag == "Association":
+            # ToDo: implement associations
+            pass
+
+    return journeys, associations
+
+def init_location_refs(db: Database, locations):
+    for tpl, location in locations.items():
+        try:
+            db.add_location_ref(tpl, location)
+        except psycopg.errors.StringDataRightTruncation as e:
+            print(e)
+            print(tpl, location)
+            sys.exit()
+
+def add_train_journeys(db: Database, journeys, assosiations):
+    for rid, journey in list(journeys.items()):
+        db.add_train_journey(rid, journey)
+        for stop in journey.get('stops'):
+            db.add_train_stop(rid, stop)
+
 if __name__ == "__main__":
-    data = main()
-    print(data)
+    db = Database()
+    data = fetch_ref_data()
+
+    start = time.time()
+    start_dt = datetime.fromtimestamp(start, UTC)
+    print(f"Started ref init @ {start_dt}")
+
+    db.add_code_map(table='train_operator_codes', key_col='toc', value_col='name', code_map=data['toc_refs'])
+    db.add_code_map(table='cis_codes', key_col='code', value_col='name', code_map=data['cis_source'])
+    db.add_code_map(table='late_reasons', key_col='code', value_col='reason', code_map=data['late_reasons'])
+    db.add_code_map(table='cancellation_reasons', key_col='code', value_col='reason', code_map=data['cancellation_reasons'])
+    init_location_refs(db, data['location_refs'])
+
+    db.commit()
+
+    end = time.time()
+    end_dt = datetime.fromtimestamp(end, UTC)
+    delta = end-start
+
+    print(f"Finished ref init @ {end_dt} ({delta}s)")
+
+    journies, assosiations = fetch_initial_journeys()
+
+    start = time.time()
+    start_dt = datetime.fromtimestamp(start, UTC)
+    print(f"Started journey init @ {start_dt}")
+
+    add_train_journeys(db, journies, assosiations)
+
+    db.commit()
+
+    end = time.time()
+    end_dt = datetime.fromtimestamp(end, UTC)
+    delta = end-start
+
+    print(f"Finished journey init @ {end_dt} ({delta}s)")
+
+    db.close()
