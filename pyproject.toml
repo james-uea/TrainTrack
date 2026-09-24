@@ -1,7 +1,7 @@
 [project]
-name = "nationrail"
+name = "traintrack"
 version = "0.1.0"
-description = "Add your description here"
+description = "Live tracking of UK trains"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
