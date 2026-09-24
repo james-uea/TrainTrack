@@ -16,23 +16,22 @@ class Database:
         cur = conn.cursor()
         return conn, cur
 
-    def add_code_map(self, table, key_col, value_col, code_map):
-        for key, value in code_map.items():
-            query = sql.SQL("""
-                INSERT INTO {table} ({key_col}, {value_col})
-                VALUES (%s, %s)
-                ON CONFLICT ({key_col})
-                    DO UPDATE SET {value_col} = EXCLUDED.{value_col}
-                WHERE {table}.{value_col} IS DISTINCT FROM EXCLUDED.{value_col};
-            """).format(
-                table=sql.Identifier(table),
-                key_col=sql.Identifier(key_col),
-                value_col=sql.Identifier(value_col),
-            )
-            self.cur.execute(query, (key, value))
+    def add_code_maps(self, table, key_col, value_col, code_map):
+        query = sql.SQL("""
+            INSERT INTO {table} ({key_col}, {value_col})
+            VALUES (%s, %s)
+            ON CONFLICT ({key_col})
+                DO UPDATE SET {value_col} = EXCLUDED.{value_col}
+            WHERE {table}.{value_col} IS DISTINCT FROM EXCLUDED.{value_col};
+        """).format(
+            table=sql.Identifier(table),
+            key_col=sql.Identifier(key_col),
+            value_col=sql.Identifier(value_col),
+        )
+        self.cur.executemany(query, [(key, value) for key, value in code_map.items()])
 
-    def add_location_ref(self, tpl, location):
-        self.cur.execute("""
+    def add_location_refs(self, locations):
+        self.cur.executemany("""
             INSERT INTO locations (tiploc, location_name, reservation_code, train_operator_code)
             VALUES (%s, %s, %s, %s)
             ON CONFLICT(tiploc)
@@ -43,15 +42,15 @@ class Database:
             WHERE locations.location_name IS DISTINCT FROM EXCLUDED.location_name
                 OR locations.reservation_code IS DISTINCT FROM EXCLUDED.reservation_code
                 OR locations.train_operator_code IS DISTINCT FROM EXCLUDED.train_operator_code
-            """, (
+            """, [(
                 tpl,
                 location.get('locname'),
                 location.get('crs'),
                 location.get('toc')
-            ))
+            ) for tpl, location in locations])
 
-    def add_train_journey(self, rid, journey):
-        self.cur.execute("""
+    def add_train_journeys(self, journeys):
+        self.cur.executemany("""
             INSERT INTO train_journeys (rid, train_id, uid, scheduled_start, toc_code, status, is_passenger, cancelled, deleted, cancel_reason)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (rid) DO UPDATE SET
@@ -64,7 +63,7 @@ class Database:
                 cancelled = EXCLUDED.cancelled,
                 deleted = EXCLUDED.deleted,
                 cancel_reason = EXCLUDED.cancel_reason
-            """, (
+            """, [(
                 rid,
                 journey.get('train_id'),
                 journey.get('uid'),
@@ -75,10 +74,10 @@ class Database:
                 journey.get('cancelled'),
                 journey.get('deleted'),
                 journey.get('cancel_reason')
-            ))
+            ) for rid, journey in journeys])
 
-    def add_train_stop(self, rid, stop):
-        self.cur.execute("""
+    def add_train_stops(self, stops):
+        self.cur.executemany("""
             INSERT INTO train_stops (rid, sequence, tiploc, location_type, activities, planned_activities, cancelled, platform, public_arrival, public_departure, working_arrival, working_departure, working_pass)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (rid, sequence) DO UPDATE SET
@@ -93,8 +92,8 @@ class Database:
                 working_arrival = EXCLUDED.working_arrival,
                 working_departure = EXCLUDED.working_departure,
                 working_pass = EXCLUDED.working_pass
-        """, (
-            rid,
+        """, [(
+            stop.get('rid'),
             stop.get('sequence'),
             stop.get('tiploc'),
             stop.get('location_type'),
@@ -107,7 +106,7 @@ class Database:
             stop.get('working_arrival'),
             stop.get('working_departure'),
             stop.get('working_pass')
-        ))
+        ) for stop in stops])
 
     def commit(self):
         self.conn.commit()
