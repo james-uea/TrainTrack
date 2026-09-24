@@ -72,7 +72,7 @@ def fetch_ref_data():
         'loading_categories': loading
     }
 
-def get_stops(journey: etree._Element):
+def get_stops(rid, journey: etree._Element):
     stops = []
     cancel_reason = None
 
@@ -90,6 +90,7 @@ def get_stops(journey: etree._Element):
         # DT - Passenger Destination Calling point (The final destination)
 
         stop_info = {
+            'rid': rid,
             'sequence': idx,
             'tiploc': stop.get('tpl'),
             'activities': stop.get('act'),
@@ -121,7 +122,7 @@ def fetch_initial_journeys():
         if tag == "Journey":
             rid = child.get('rid')
 
-            stops, cancel_reason = get_stops(child)
+            stops, cancel_reason = get_stops(rid, child)
 
             journeys[rid] = {
                 'uid' : child.get('uid'),
@@ -143,20 +144,13 @@ def fetch_initial_journeys():
 
     return journeys, associations
 
-def init_location_refs(db: Database, locations):
-    for tpl, location in locations.items():
-        try:
-            db.add_location_ref(tpl, location)
-        except psycopg.errors.StringDataRightTruncation as e:
-            print(e)
-            print(tpl, location)
-            sys.exit()
-
 def add_train_journeys(db: Database, journeys, assosiations):
-    for rid, journey in list(journeys.items()):
-        db.add_train_journey(rid, journey)
-        for stop in journey.get('stops'):
-            db.add_train_stop(rid, stop)
+    db.add_train_journeys(list(journeys.items()))
+    db.add_train_stops(
+        stop
+        for journey in journeys.values()
+        for stop in journey["stops"]
+    )
 
 if __name__ == "__main__":
     db = Database()
@@ -166,12 +160,12 @@ if __name__ == "__main__":
     start_dt = datetime.fromtimestamp(start, UTC)
     print(f"Started ref init @ {start_dt}")
 
-    db.add_code_map(table='train_operator_codes', key_col='toc', value_col='name', code_map=data['toc_refs'])
-    db.add_code_map(table='cis_codes', key_col='code', value_col='name', code_map=data['cis_source'])
-    db.add_code_map(table='late_reasons', key_col='code', value_col='reason', code_map=data['late_reasons'])
-    db.add_code_map(table='cancellation_reasons', key_col='code', value_col='reason', code_map=data['cancellation_reasons'])
-    init_location_refs(db, data['location_refs'])
+    db.add_code_maps(table='train_operator_codes', key_col='toc', value_col='name', code_map=data['toc_refs'])
+    db.add_code_maps(table='cis_codes', key_col='code', value_col='name', code_map=data['cis_source'])
+    db.add_code_maps(table='late_reasons', key_col='code', value_col='reason', code_map=data['late_reasons'])
+    db.add_code_maps(table='cancellation_reasons', key_col='code', value_col='reason', code_map=data['cancellation_reasons'])
 
+    db.add_location_refs(data['location_refs'].items())
     db.commit()
 
     end = time.time()
