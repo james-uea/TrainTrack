@@ -1,14 +1,21 @@
 # TrainTrack
 
-TrackTrain is a project for live tracking of UK trains, originally implemented in a seperate project titled 'Conductor'
+TrainTrack is a project for live tracking of UK trains, originally implemented in a seperate project titled 'Conductor'
 
 ## Setup
 
-Setup a RailData account
-Subscribe to darwin
-Get your kafka config
-Setup .env
-Setup docker
+1) Setup a [RailData](https://raildata.org.uk/) account
+2) Subscribe to "Darwin Real Time Train Information (Push)"
+3) Fetch your kafka credentials and configuration
+4) Setup .env
+5) Setup docker
+6) Apply database migrations
+
+## Planned work
+
+- [ ] Save live Darwin updates to PostgreSQL.
+- [ ] Import the daily timetable and reference data.
+- [ ] Add a way to query a train's latest reported location.
 
 ## Changelog
 
