@@ -29,10 +29,10 @@ class Database:
                 key_col=sql.Identifier(key_col),
                 value_col=sql.Identifier(value_col),
             )
-            self.cur.execute(query, (key, value))
+            self.cur.executemany(query, (key, value))
 
     def add_location_ref(self, tpl, location):
-        self.cur.execute("""
+        self.cur.executemany("""
             INSERT INTO locations (tiploc, location_name, reservation_code, train_operator_code)
             VALUES (%s, %s, %s, %s)
             ON CONFLICT(tiploc)
@@ -51,7 +51,7 @@ class Database:
             ))
 
     def add_train_journey(self, rid, journey):
-        self.cur.execute("""
+        self.cur.executemany("""
             INSERT INTO train_journeys (rid, train_id, uid, scheduled_start, toc_code, status, is_passenger, cancelled, deleted, cancel_reason)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (rid) DO UPDATE SET
@@ -78,7 +78,7 @@ class Database:
             ))
 
     def add_train_stop(self, rid, stop):
-        self.cur.execute("""
+        self.cur.executemany("""
             INSERT INTO train_stops (rid, sequence, tiploc, location_type, activities, planned_activities, cancelled, platform, public_arrival, public_departure, working_arrival, working_departure, working_pass)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (rid, sequence) DO UPDATE SET
