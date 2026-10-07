@@ -13,7 +13,6 @@ TrainTrack is a project for live tracking of UK trains, originally implemented i
 
 ## Planned work
 
-- [ ] Save live Darwin updates to PostgreSQL.
 - [ ] Import the daily timetable and reference data.
 - [ ] Add a way to query a train's latest reported location.
 
