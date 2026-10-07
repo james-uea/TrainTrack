@@ -1,6 +1,6 @@
 [project]
 name = "traintrack"
-version = "0.2.0"
+version = "0.2.1"
 description = "Live tracking of UK trains"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -9,6 +9,7 @@ dependencies = [
     "lxml>=6.1.3",
     "psycopg[binary]>=3.3.5",
     "python-dotenv>=1.2.3",
+    "textual>=8.2.8",
 ]
 
 [dependency-groups]

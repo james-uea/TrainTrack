@@ -1,5 +1,5 @@
 import psycopg
-from psycopg import DataError, sql
+from psycopg import sql
 
 from darwin import TrainStatus
 
@@ -134,8 +134,8 @@ class Database:
             self.conn.commit()
             print(f"Updated {self.cur.rowcount} rows")
 
-        except DataError as data_error:
-            print("Rolling back due to error:", data_error)
+        except psycopg.Error as psy_error:
+            print("Rolling back due to error:", psy_error)
             self.conn.rollback()
         except Exception as e:
             # ToDo: I'm unsure what exceptions might actually be thrown here
