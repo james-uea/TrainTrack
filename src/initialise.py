@@ -24,7 +24,7 @@ def fetch_ref_data():
     cis = {}
     loading = {}
 
-    tree = etree.parse('data/PPTimetable_20260905020530_ref_v4.xml')
+    tree = etree.parse('data/PPTimetable_20261007020538_ref_v4.xml')
     root = tree.getroot()
 
     for child in root:
@@ -110,7 +110,7 @@ def get_stops(rid, journey: etree._Element):
     return stops, cancel_reason
 
 def fetch_initial_journeys():
-    tree = etree.parse('data/PPTimetable_20260905020530_v8.xml')
+    tree = etree.parse('data/PPTimetable_20261007020538_v8.xml')
     root: etree._Element = tree.getroot()
 
     journeys = {}
@@ -166,7 +166,6 @@ if __name__ == "__main__":
     db.add_code_maps(table='cancellation_reasons', key_col='code', value_col='reason', code_map=data['cancellation_reasons'])
 
     db.add_location_refs(data['location_refs'].items())
-    db.commit()
 
     end = time.time()
     end_dt = datetime.fromtimestamp(end, UTC)
@@ -181,8 +180,6 @@ if __name__ == "__main__":
     print(f"Started journey init @ {start_dt}")
 
     add_train_journeys(db, journies, assosiations)
-
-    db.commit()
 
     end = time.time()
     end_dt = datetime.fromtimestamp(end, UTC)

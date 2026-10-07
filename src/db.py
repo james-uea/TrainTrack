@@ -1,5 +1,7 @@
 import psycopg
-from psycopg import sql
+from psycopg import DataError, sql
+
+from darwin import TrainStatus
 
 
 class Database:
@@ -29,6 +31,7 @@ class Database:
             value_col=sql.Identifier(value_col),
         )
         self.cur.executemany(query, [(key, value) for key, value in code_map.items()])
+        self.conn.commit()
 
     def add_location_refs(self, locations):
         self.cur.executemany("""
@@ -48,6 +51,7 @@ class Database:
                 location.get('crs'),
                 location.get('toc')
             ) for tpl, location in locations])
+        self.conn.commit()
 
     def add_train_journeys(self, journeys):
         self.cur.executemany("""
@@ -75,6 +79,7 @@ class Database:
                 journey.get('deleted'),
                 journey.get('cancel_reason')
             ) for rid, journey in journeys])
+        self.conn.commit()
 
     def add_train_stops(self, stops):
         self.cur.executemany("""
@@ -107,9 +112,34 @@ class Database:
             stop.get('working_departure'),
             stop.get('working_pass')
         ) for stop in stops])
-
-    def commit(self):
         self.conn.commit()
+
+    def save_train_updates(self, train_status: TrainStatus):
+        rows = []
+
+        for loc in train_status.locations:
+            rows.append((loc.actual_arrival, loc.actual_departure, loc.actual_pass, train_status.rid, loc.tiploc, loc.working_arrival, loc.working_departure, loc.working_pass))
+
+        try:
+            self.cur.executemany("""
+                UPDATE train_stops SET
+                    actual_arrival      = COALESCE(%s::time, actual_arrival),
+                    actual_departure    = COALESCE(%s::time, actual_departure),
+                    actual_pass         = COALESCE(%s::time, actual_pass)
+                WHERE rid = %s AND TIPLOC = %s
+                AND working_arrival   IS NOT DISTINCT FROM %s::time
+                AND working_departure IS NOT DISTINCT FROM %s::time
+                AND working_pass      IS NOT DISTINCT FROM %s::time
+            """, rows)
+            self.conn.commit()
+            print(f"Updated {self.cur.rowcount} rows")
+
+        except DataError as data_error:
+            print("Rolling back due to error:", data_error)
+            self.conn.rollback()
+        except Exception as e:
+            # ToDo: I'm unsure what exceptions might actually be thrown here
+            print(type(e), e)
 
     def close(self):
         self.cur.close()

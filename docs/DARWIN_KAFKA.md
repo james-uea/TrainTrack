@@ -15,3 +15,21 @@ b'{"destination":{"name":"Consumer.rdmportal.VirtualTopic.PushPort-v18","destina
 #### messageType
 #### bytes
 This key contains the raw updates from Darwin
+
+#### Origin Types
+TD
+CIS
+Trust
+Darwin
+GPS
+
+### Status
+```
+{'rid': '202609048315515', 'uid': 'S15515', 'ssd': '2026-09-04', 'Location': [{'tpl': 'PRINRIS', 'wta': '00:38:30', 'wtd': '00:39:30', 'pta': '00:39', 'ptd': '00:39', 'arr': {'at': '00:37', 'atClass': 'Automatic', 'src': 'TRUST', 'srcInst': 'Auto'}, 'dep': {'et': '00:39', 'src': 'Darwin'}, 'plat': {'platsrc': 'M', '': '2'}, 'length': '5'}, {'tpl': 'LTLKMBL', 'wtp': '00:45', 'pass': {'et': '00:44', 'src': 'Darwin'}, 'plat': {'platsup': 'true', 'platsrc': 'M', '': '1'}, 'length': '5'}, {'tpl': 'MSHLLC', 'wtp': '00:48', 'pass': {'et': '00:47', 'src': 'Darwin'}, 'length': '5'}, {'tpl': 'AYLSBRY', 'wta': '00:55', 'pta': '00:55', 'arr': {'et': '00:55', 'wet': '00:52', 'src': 'Darwin'}, 'plat': {'platsrc': 'M', '': '2'}, 'length': '5'}]}
+
+{'rid': '202609047680912', 'uid': 'L80912', 'ssd': '2026-09-04', 'Location': {'tpl': 'STAINES', 'wta': '00:37', 'pta': '00:37', 'arr': {'et': '00:38', 'src': 'TD'}, 'plat': {'platsup': 'true', 'cisPlatsup': 'true', '': '1'}, 'length': '8'}}
+
+{'rid': '202609057161941', 'uid': 'G61941', 'ssd': '2026-09-05', 'Location': [{'tpl': 'CLAPTNJ', 'wtp': '00:30:30', 'pass': {'at': '00:36', 'atClass': 'Automatic', 'src': 'TRUST', 'srcInst': 'Auto'}}, {'tpl': 'STJMSST', 'wta': '00:32:30', 'wtd': '00:33', 'pta': '00:33', 'ptd': '00:33', 'arr': {'et': '00:38', 'src': 'Darwin'}, 'dep': {'et': '00:38', 'src': 'Darwin'}, 'plat': {'platsrc': 'A', 'conf': 'true', '': '2'}}, {'tpl': 'WLTWCEN', 'wta': '00:34', 'wtd': '00:35', 'pta': '00:35', 'ptd': '00:35', 'arr': {'et': '00:39', 'src': 'Darwin'}, 'dep': {'et': '00:40', 'src': 'Darwin'}, 'plat': '2'}, {'tpl': 'WDST', 'wta': '00:37', 'wtd': '00:37:30', 'pta': '00:37', 'ptd': '00:37', 'arr': {'et': '00:42', 'src': 'Darwin'}, 'dep': {'et': '00:42', 'src': 'Darwin'}, 'plat': '2'}, {'tpl': 'HGHMSPK', 'wta': '00:40', 'wtd': '00:40:30', 'pta': '00:40', 'ptd': '00:40', 'arr': {'et': '00:45', 'src': 'Darwin'}, 'dep': {'et': '00:45', 'src': 'Darwin'}, 'plat': '2'}, {'tpl': 'CHINGFD', 'wta': '00:45', 'pta': '00:46', 'arr': {'et': '00:50', 'src': 'Darwin'}, 'plat': '2'}]}
+
+{'rid': '202609056736455', 'uid': 'C36455', 'ssd': '2026-09-05', 'Location': {'tpl': 'ABWDXR', 'wtd': '00:36', 'dep': {'at': '00:36', 'atClass': 'Automatic', 'src': 'TD'}, 'plat': {'platsup': 'true', 'platsrc': 'A', '': '4'}}}
+```

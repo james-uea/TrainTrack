@@ -7,6 +7,9 @@ from json import JSONDecodeError
 from confluent_kafka import Consumer, KafkaException
 from dotenv import dotenv_values
 
+from darwin import TrainStatus, parse_location
+from db import Database
+
 config = dotenv_values(".env")
 
 print(f"Authenticating with {config['KAFKA_USERNAME']}@{config['KAFKA_SERVER']}")
@@ -29,30 +32,17 @@ logger.setLevel(logging.DEBUG)
 def print_assignment(consumer, partitions):
     print('Assignment:', partitions)
 
-def process(data):
-    if data is None:
-        return
-
+def process_train_status(data: bytes) -> TrainStatus | None:
     try:
         processed_data = json.loads(data)
-
         if not (raw_update_json := processed_data.get('bytes')):
             return
-
         json_data = json.loads(raw_update_json)
-
     except (JSONDecodeError, TypeError):
         return
 
-    if 'uR' not in json_data:
-        return
-
-    return extract_train_status(json_data)
-
-def extract_train_status(payload: dict) -> dict | None:
-    update = payload.get("uR") # Update Response
-    if not isinstance(update, dict):
-        return None
+    update = (json_data.get("uR") or None) # Update Response
+    if not update: return
 
     status = update.get('TS')
     if not isinstance(status, dict):
@@ -60,32 +50,39 @@ def extract_train_status(payload: dict) -> dict | None:
 
     locations = status.get('Location', []) # Fetch Location, failing that return empty list
     if isinstance(locations, dict):
-        locations = [locations]
+        locations = [parse_location(locations)]
+    elif isinstance(locations, list):
+        locations = [parse_location(location) for location in locations]
     elif not isinstance(locations, list):
         locations = []
 
-    return {
-        "update_origin": update.get('updateOrigin'),
-        "rid": status.get('rid'),
-        "uid": status.get('uid'),
-        "ssd": status.get('ssd'),
-        "locations": locations
-    }
+    return TrainStatus(
+        update_origin=update.get('updateOrigin'),
+        rid=status.get('rid'),
+        uid=status.get('uid'),
+        ssd=status.get('ssd'),
+        locations=locations
+    )
 
 def main():
     consumer = Consumer(conf, logger=logger)
     consumer.subscribe(topics, on_assign=print_assignment)
+    db = Database()
 
     try:
         while True:
             msg = consumer.poll(timeout=1.0)
-            if msg is None:
-                continue
+            if msg is None: continue
+
             if msg.error():
                 raise KafkaException(msg.error())
             else:
-                train_updates = process(msg.value())
-                print(train_updates)
+                data = msg.value()
+                if data:
+                    train_status = process_train_status(data)
+                    if train_status:
+                        # print(train_status)
+                        db.save_train_updates(train_status)
                 # Store the offset associated with msg to a local cache.
                 # Stored offsets are committed to Kafka by a background thread every 'auto.commit.interval.ms'.
                 consumer.store_offsets(msg)
