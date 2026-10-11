@@ -10,14 +10,25 @@ class Location:
     actual_arrival: str | None
     actual_departure: str | None
     actual_pass: str | None
+    sequence: str | None = None
 
 @dataclass
 class TrainStatus:
     update_origin: str | None
     rid: str
     uid: str | None
-    ssd: str | None
+    scheduled_start: str | None
     locations: list[Location]
+
+    def starts(self) -> str | None:
+        # Return the working_departure from the first sequence
+        if len(self.locations) > 0 and self.scheduled_start:
+            return f"{self.scheduled_start} {self.locations[0].working_departure}"
+
+    def ends(self) -> str | None:
+        # Return the working_arrival from the last sequence
+        if len(self.locations) > 0:
+            return self.locations[len(self.locations) - 1].working_arrival
 
 def parse_location(loc: dict) -> Location:
     def actual_time(k):

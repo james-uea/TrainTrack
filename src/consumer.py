@@ -60,7 +60,7 @@ def process_train_status(data: bytes) -> TrainStatus | None:
         update_origin=update.get('updateOrigin'),
         rid=status.get('rid'),
         uid=status.get('uid'),
-        ssd=status.get('ssd'),
+        scheduled_start=status.get('ssd'),
         locations=locations
     )
 

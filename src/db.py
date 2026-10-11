@@ -1,7 +1,7 @@
 import psycopg
 from psycopg import sql
 
-from darwin import TrainStatus
+from darwin import TrainStatus, Location
 
 
 class Database:
@@ -131,8 +131,9 @@ class Database:
                 AND working_departure IS NOT DISTINCT FROM %s::time
                 AND working_pass      IS NOT DISTINCT FROM %s::time
             """, rows)
-            self.conn.commit()
             print(f"Updated {self.cur.rowcount} rows")
+            self.cur.execute("UPDATE train_journeys SET last_reported_at = now() WHERE rid = %s", (train_status.rid,))
+            self.conn.commit()
 
         except psycopg.Error as psy_error:
             print("Rolling back due to error:", psy_error)
@@ -141,6 +142,61 @@ class Database:
             # ToDo: I'm unsure what exceptions might actually be thrown here
             print(type(e), e)
 
+    def fetch_train_stops(self, rid, count: int = 5) -> list[Location]:
+        stops = []
+        self.cur.execute("""
+            SELECT sequence, tiploc, actual_arrival, actual_departure, actual_pass, working_arrival, working_departure, working_pass FROM train_stops WHERE rid = %s
+            """, (rid,))
+        results = self.cur.fetchall()
+
+        for result in results:
+            stops.append(Location(
+                sequence=result[0],
+                tiploc=result[1],
+                actual_arrival=result[2],
+                actual_departure=result[3],
+                actual_pass=result[4],
+                working_arrival=result[5],
+                working_departure=result[6],
+                working_pass=result[7]
+            ))
+
+        return stops
+
+
+    def fetch_train_journeys(self, count: int = 5) -> list[TrainStatus]:
+        trains = []
+
+        self.cur.execute("""
+            SELECT rid, uid, scheduled_start FROM train_journeys ORDER BY last_reported_at DESC NULLS LAST LIMIT %s
+            """, (count,))
+        results = self.cur.fetchall()
+
+        for result in results:
+            rid = result[0]
+            stops = self.fetch_train_stops(rid)
+
+            trains.append(TrainStatus(
+                update_origin=None,
+                rid=rid,
+                uid=result[1],
+                scheduled_start=result[2],
+                locations=stops
+            ))
+
+        return trains
+
     def close(self):
         self.cur.close()
         self.conn.close()
+
+    def commit(self):
+        self.conn.commit()
+
+def main():
+    db = Database()
+    trains = db.fetch_train_journeys()
+    print(trains)
+
+if __name__ == "__main__":
+    main()
