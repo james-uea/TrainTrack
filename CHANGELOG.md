@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.1
+### Changed
+- `db.py:fetch_train_stops` now orders by sequence to ensure stops are in the right order
+- `last_reported_at` in the table `train_journeys` now only updates when something actually changed
+
 ## 0.3.0
 ### Added
 - A CLI for viewing train journey data

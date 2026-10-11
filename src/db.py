@@ -132,7 +132,9 @@ class Database:
                 AND working_pass      IS NOT DISTINCT FROM %s::time
             """, rows)
             print(f"Updated {self.cur.rowcount} rows")
-            self.cur.execute("UPDATE train_journeys SET last_reported_at = now() WHERE rid = %s", (train_status.rid,))
+            # ToDo: This could be done better, perhaps matching the type of update that came through?
+            if self.cur.rowcount > 0:
+                self.cur.execute("UPDATE train_journeys SET last_reported_at = now() WHERE rid = %s", (train_status.rid,))
             self.conn.commit()
 
         except psycopg.Error as psy_error:
@@ -142,10 +144,10 @@ class Database:
             # ToDo: I'm unsure what exceptions might actually be thrown here
             print(type(e), e)
 
-    def fetch_train_stops(self, rid, count: int = 5) -> list[Location]:
+    def fetch_train_stops(self, rid) -> list[Location]:
         stops = []
         self.cur.execute("""
-            SELECT sequence, tiploc, actual_arrival, actual_departure, actual_pass, working_arrival, working_departure, working_pass FROM train_stops WHERE rid = %s
+            SELECT sequence, tiploc, actual_arrival, actual_departure, actual_pass, working_arrival, working_departure, working_pass FROM train_stops WHERE rid = %s ORDER BY sequence
             """, (rid,))
         results = self.cur.fetchall()
 
