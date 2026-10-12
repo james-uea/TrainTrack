@@ -48,7 +48,6 @@ flowchart LR
 
 ## Planned work
 
-- [x] Import the daily timetable and reference data.
 - [ ] Add a way to query a train's latest reported location.
 - [ ] A terminal ui for inital setup and configuration
 
@@ -58,7 +57,7 @@ flowchart LR
 
 ## Changelog
 
-The project changelog can be found [here](CHANGELOG.md)
+See [CHANGELOG.md](CHANGELOG.md) for release notes
 
 ## Acknowledgments
 
