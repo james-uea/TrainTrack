@@ -202,13 +202,13 @@ if __name__ == "__main__":
 
     print(f"Finished ref init @ {end_dt} ({delta}s)")
 
-    journies, assosiations = fetch_initial_journeys()
+    journeys, associations = fetch_initial_journeys()
 
     start = time.time()
     start_dt = datetime.fromtimestamp(start, UTC)
     print(f"Started journey init @ {start_dt}")
 
-    add_train_journeys(db, journies, assosiations)
+    add_train_journeys(db, journeys, associations)
 
     end = time.time()
     end_dt = datetime.fromtimestamp(end, UTC)
