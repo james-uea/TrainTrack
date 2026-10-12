@@ -4,16 +4,37 @@ Files are served via xml, containing `_ref_v4.xml` and `_v8.xml`, ref contains l
 and the v8 contains the actual data.
 '''
 
-import sys
+import re
 import time
 from datetime import UTC, datetime
+from os import listdir
+from os.path import isfile, join
 
-import psycopg
 from lxml import etree
 
 from db import Database
 from util import convert_to_bool
 
+
+def get_latest(data_dir: str, ref: bool = False) -> str | None:
+    files = [f for f in listdir(data_dir) if isfile(join(data_dir, f))]
+
+    suffix = "_ref_v4" if ref else "_v8"
+    pattern = re.compile(rf'PPTimetable_(\d{{14}}){suffix}\.xml')
+
+    latest_date = None
+    latest_file = None
+
+    for file in files:
+        match = pattern.fullmatch(file)
+        if not match:
+            continue
+        date = int(match.group(1))
+        if not latest_date or date > latest_date:
+            latest_date = date
+            latest_file = file
+
+    return join(data_dir, latest_file) if latest_file else None
 
 def fetch_ref_data():
     loc_refs = {}
@@ -24,7 +45,11 @@ def fetch_ref_data():
     cis = {}
     loading = {}
 
-    tree = etree.parse('data/PPTimetable_20261007020538_ref_v4.xml')
+    ref_file = get_latest(data_dir='data', ref=True)
+    if not ref_file:
+        raise Exception("No Reference File")
+
+    tree = etree.parse(ref_file)
     root = tree.getroot()
 
     for child in root:
@@ -110,7 +135,11 @@ def get_stops(rid, journey: etree._Element):
     return stops, cancel_reason
 
 def fetch_initial_journeys():
-    tree = etree.parse('data/PPTimetable_20261007020538_v8.xml')
+    journeys_file = get_latest(data_dir='data', ref=False)
+    if not journeys_file:
+        raise Exception("No Journeys File")
+
+    tree = etree.parse(journeys_file)
     root: etree._Element = tree.getroot()
 
     journeys = {}
