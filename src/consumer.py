@@ -14,6 +14,7 @@ config = dotenv_values(".env")
 
 print(f"Authenticating with {config['KAFKA_USERNAME']}@{config['KAFKA_SERVER']}")
 
+# ToDo: Read this from the env config
 topics = ['prod-1010-Darwin-Train-Information-Push-Port-IIII2_0-JSON']
 
 conf = {'bootstrap.servers': config['KAFKA_SERVER'],
