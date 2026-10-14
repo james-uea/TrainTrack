@@ -1,6 +1,6 @@
 # TrainTrack
 
-TrainTrack uses Nation Rail's Darwin Feed for tracking UK trains live
+TrainTrack uses NationalRail's Darwin Feed for tracking UK trains live
 
 Journeys, Stops & Updates are all stored in postgres
 
