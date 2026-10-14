@@ -173,7 +173,7 @@ def fetch_initial_journeys():
 
     return journeys, associations
 
-def add_train_journeys(db: Database, journeys, assosiations):
+def add_train_journeys(db: Database, journeys, associations):
     db.add_train_journeys(list(journeys.items()))
     db.add_train_stops(
         stop

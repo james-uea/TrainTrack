@@ -9,7 +9,7 @@ CREATE TABLE train_operator_codes (
     name VARCHAR(256)
 );
 
--- Location references, population by the ref v4 schema
+-- Location references, populated by the ref v4 schema
 CREATE TABLE locations (
     tiploc VARCHAR(7) NOT NULL UNIQUE PRIMARY KEY,
     location_name VARCHAR(30) NOT NULL, -- locname
@@ -35,7 +35,7 @@ CREATE TABLE cancellation_reasons (
     reason VARCHAR(256)
 );
 
--- Train journeys / current status, initalized by the v8 schema and updated by the consumer
+-- Train journeys / current status, initialized by the v8 schema and updated by the consumer
 CREATE TABLE train_journeys (
     rid VARCHAR(16) NOT NULL PRIMARY KEY,
     train_id VARCHAR(16) NOT NULL,

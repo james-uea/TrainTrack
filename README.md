@@ -2,7 +2,7 @@
 
 TrainTrack uses NationalRail's Darwin Feed for tracking UK trains live
 
-Journeys, Stops & Updates are all stored in postgres
+Journeys, Stops & Updates are all stored in Postgres.
 
 ```mermaid
 ---
@@ -34,10 +34,10 @@ flowchart LR
 
 1) Set up an FTP Server (timetable files must end up in `data/` to be loaded)
 1) Set up a [RailData](https://raildata.org.uk/) account
-1) Subscribe to [Darwin Real Time Train Information (Push)](https://raildata.org.uk/dashboard/dataProduct/P-3f10bf96-d8e8-4041-aa5e-d75d82c45c4e/overview) and take note of your kafka credentials and configuration
+1) Subscribe to [Darwin Real Time Train Information (Push)](https://raildata.org.uk/dashboard/dataProduct/P-3f10bf96-d8e8-4041-aa5e-d75d82c45c4e/overview) and take note of your Kafka credentials and configuration
 1) Subscribe to [Darwin Timetable Files](https://raildata.org.uk/dashboard/dataProduct/P-9ca6bc7e-62e1-44d6-b93a-1616f7d2caf8/overview), configure the FTP location to point at the `data/` folder
-1) copy `.env.example` to `.env` and set the values to the ones Raildata provides
-1) Run `docker compose up -d` to launch postgres and adminer
+1) Copy `.env.example` to `.env` and set the values to the ones RailData provides
+1) Run `docker compose up -d` to launch Postgres and Adminer
 1) Apply database migrations (`uv run src/migrate.py`)
 
 ## Usage
@@ -49,7 +49,7 @@ flowchart LR
 ## Planned work
 
 - [ ] Add a way to query a train's latest reported location.
-- [ ] A terminal ui for inital setup and configuration
+- [ ] A terminal ui for initial setup and configuration
 
 ## Not currently planned
 
