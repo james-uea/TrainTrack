@@ -1,3 +1,4 @@
+from datetime import datetime
 from itertools import cycle
 
 from textual.app import App, ComposeResult
@@ -5,10 +6,22 @@ from textual.binding import Binding
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Static
 
-from darwin import TrainStatus
-from db import Database
+from db import Database, JourneySummary
+from util import LONDON
 
 cursors = cycle(["row", "column", "none"])
+
+
+def hhmm(value: datetime | None) -> str:
+    return value.astimezone(LONDON).strftime("%H:%M") if value else ""
+
+
+def delay_text(minutes: int | None) -> str:
+    if minutes is None:
+        return ""
+    if minutes == 0:
+        return "on time"
+    return f"{minutes} late" if minutes > 0 else f"{-minutes} early"
 
 
 class StopsScreen(Screen):
@@ -17,12 +30,13 @@ class StopsScreen(Screen):
         Binding(key="escape", action="app.pop_screen", description="Go back"),
     ]
 
-    def __init__(self, train: TrainStatus):
+    def __init__(self, train: JourneySummary, db: Database):
         super().__init__()
         self.train = train
+        self.db = db
 
     def compose(self) -> ComposeResult:
-        yield Static(f"Train {self.train.rid} ({self.train.scheduled_start})")
+        yield Static(f"{self.train.uid} {self.train.origin} to {self.train.destination} ({self.train.scheduled_start}, rid {self.train.rid})")
         yield DataTable()
         yield Footer()
 
@@ -30,13 +44,18 @@ class StopsScreen(Screen):
         table = self.query_one(DataTable)
         table.cursor_type = 'row'
         table.zebra_stripes = True
-        table.add_columns('Sequence', 'Arrival', 'Departure', 'Ex At', 'Ex Dep', 'Ex Pass')
+        table.add_columns('#', 'Location', 'Plat', 'Plan arr', 'Plan dep', 'Plan pass', 'Exp arr', 'Exp dep', 'Exp pass', 'Arrived', 'Departed', 'Passed')
 
-        for stop in self.train.locations:
-            table.add_row(stop.sequence, stop.actual_arrival, stop.actual_departure, stop.working_arrival, stop.working_departure, stop.working_pass)
+        for stop in self.db.fetch_train_stops(self.train.rid):
+            table.add_row(
+                stop.sequence, stop.tiploc, stop.platform or '',
+                hhmm(stop.working_arrival), hhmm(stop.working_departure), hhmm(stop.working_pass),
+                hhmm(stop.estimated_arrival), hhmm(stop.estimated_departure), hhmm(stop.estimated_pass),
+                hhmm(stop.actual_arrival), hhmm(stop.actual_departure), hhmm(stop.actual_pass),
+            )
 
 class JourneyTable(DataTable):
-    BINDINGS = [Binding(key="right", action="select_cursor", description="Open Journey")]
+    BINDINGS = [Binding(key="right", action="select_cursor", description="Open Journey")]  # noqa: RUF012
 
 class TrainSearchApp(App):
     BINDINGS = [  # noqa: RUF012
@@ -53,11 +72,16 @@ class TrainSearchApp(App):
 
         self.table.clear()
         for train in self.trains.values():
-            self.table.add_row(train.rid, train.uid, train.starts(), train.ends(), '', key=train.rid)
+            last_seen = f"{train.last_report_type or ''} {train.last_location or ''} {hhmm(train.last_reported_at)}".strip()
+            self.table.add_row(
+                train.uid, train.toc or '', train.origin or '', hhmm(train.departs), train.destination or '',
+                hhmm(train.arrives), last_seen, 'cancelled' if train.cancelled else delay_text(train.delay_minutes),
+                key=train.rid,
+            )
 
     def on_mount(self) -> None:
-        ROWS = [  # noqa: RUF012
-            ("RID", 'UID', "Starts", "Ends", "Last Tiploc")
+        ROWS = [
+            ("UID", "TOC", "From", "Departs", "To", "Arrives", "Last seen", "Delay")
         ]
 
         self.db = Database()
@@ -72,7 +96,7 @@ class TrainSearchApp(App):
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         rid = event.row_key.value
-        self.push_screen(StopsScreen(self.trains[rid]))
+        self.push_screen(StopsScreen(self.trains[rid], self.db))
 
     def key_c(self):
         table = self.query_one(DataTable)
