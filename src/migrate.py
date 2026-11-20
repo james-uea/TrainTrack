@@ -1,11 +1,16 @@
+import logging
 import os
 
+from config import load_config
 from db import Database
 
+logger = logging.getLogger("migrate")
 
-def main():
-    db = Database()
+MIGRATIONS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "sql", "migrations")
 
+
+def apply_migrations(db: Database, migrations_dir: str = MIGRATIONS_DIR) -> list[str]:
+    """Apply pending migrations in one transaction. Returns the ones applied."""
     db.cur.execute("""
         CREATE TABLE IF NOT EXISTS schema_migrations (
         version TEXT PRIMARY KEY,
@@ -15,23 +20,30 @@ def main():
 
     db.cur.execute('SELECT version FROM schema_migrations;')
     versions = [row[0] for row in db.cur.fetchall()]
-    migrations = sorted(os.listdir('sql/migrations'))
-    migrations = [migration for migration in migrations if migration not in versions]
+    migrations = sorted(name for name in os.listdir(migrations_dir) if name.endswith(".sql"))
+    pending = [migration for migration in migrations if migration not in versions]
 
-    print(f"{len(versions)} Migration(s) already applied. {len(migrations)} pending")
+    logger.info("%d migration(s) already applied, %d pending", len(versions), len(pending))
 
-    for migration in migrations:
-        print(f"Applying migration: {migration}")
-
-        with open(f'sql/migrations/{migration}', 'r') as f:
-            migration_sql = f.read()
-            db.cur.execute(migration_sql)
-
+    for migration in pending:
+        logger.info("Applying migration: %s", migration)
+        with open(os.path.join(migrations_dir, migration)) as f:
+            db.cur.execute(f.read())
         db.cur.execute("INSERT INTO schema_migrations (version) VALUES (%s);", (migration,))
-        print("Migration applied")
 
     db.commit()
-    db.close()
+    return pending
+
+
+def main():
+    config = load_config()
+    logging.basicConfig(level=config.log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    db = Database(config.database_url)
+    try:
+        apply_migrations(db)
+    finally:
+        db.close()
+
 
 if __name__ == "__main__":
     main()

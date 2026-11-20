@@ -1,99 +1,99 @@
-import json
+"""
+Consume the Darwin Push Port from Kafka, log every message and apply it to the database.
+
+    uv run src/consumer.py                      # normal running
+    uv run src/consumer.py --record out.jsonl   # also save raw messages, e.g. to build test fixtures
+"""
+
+import argparse
 import logging
 import socket
-import sys
-from json import JSONDecodeError
+import time
 
 from confluent_kafka import Consumer, KafkaException
-from dotenv import dotenv_values
 
-from darwin import TrainStatus, parse_location
+from config import load_config
+from darwin import parse_message
 from db import Database
 
-config = dotenv_values(".env")
+logger = logging.getLogger("consumer")
 
-print(f"Authenticating with {config['KAFKA_USERNAME']}@{config['KAFKA_SERVER']}")
+STATS_INTERVAL_SECONDS = 60
 
-# ToDo: Read this from the env config
-topics = ['prod-1010-Darwin-Train-Information-Push-Port-IIII2_0-JSON']
 
-conf = {'bootstrap.servers': config['KAFKA_SERVER'],
-        'group.id': config['KAFKA_GROUP'],
+def build_consumer(config) -> Consumer:
+    missing = [name for name in ("kafka_server", "kafka_username", "kafka_password", "kafka_group") if not getattr(config, name)]
+    if missing:
+        raise RuntimeError(f"Missing Kafka settings: {', '.join(name.upper() for name in missing)}")
+
+    return Consumer({
+        'bootstrap.servers': config.kafka_server,
+        'group.id': config.kafka_group,
         'session.timeout.ms': 6000,
         'security.protocol': 'SASL_SSL',
         'sasl.mechanism': 'PLAIN',
-        'sasl.username': config['KAFKA_USERNAME'],
-        'sasl.password': config['KAFKA_PASSWORD'],
-        "enable.auto.offset.store": False,
-        'client.id': socket.gethostname()}
+        'sasl.username': config.kafka_username,
+        'sasl.password': config.kafka_password,
+        'enable.auto.offset.store': False,
+        'client.id': socket.gethostname(),
+    }, logger=logging.getLogger("kafka"))
 
-logger = logging.getLogger('consumer')
-logger.setLevel(logging.DEBUG)
-
-def print_assignment(consumer, partitions):
-    print('Assignment:', partitions)
-
-def process_train_status(data: bytes) -> TrainStatus | None:
-    try:
-        processed_data = json.loads(data)
-        if not (raw_update_json := processed_data.get('bytes')):
-            return
-        json_data = json.loads(raw_update_json)
-    except (JSONDecodeError, TypeError):
-        return
-
-    update = (json_data.get("uR") or None) # Update Response
-    if not update: return
-
-    status = update.get('TS')
-    if not isinstance(status, dict):
-        return None
-
-    locations = status.get('Location', []) # Fetch Location, failing that return empty list
-    if isinstance(locations, dict):
-        locations = [parse_location(locations)]
-    elif isinstance(locations, list):
-        locations = [parse_location(location) for location in locations]
-    elif not isinstance(locations, list):
-        locations = []
-
-    return TrainStatus(
-        update_origin=update.get('updateOrigin'),
-        rid=status.get('rid'),
-        uid=status.get('uid'),
-        scheduled_start=status.get('ssd'),
-        locations=locations
-    )
 
 def main():
-    consumer = Consumer(conf, logger=logger)
-    consumer.subscribe(topics, on_assign=print_assignment)
-    db = Database()
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--record", metavar="FILE", help="append every raw Kafka message to FILE (one per line)")
+    args = parser.parse_args()
+
+    config = load_config()
+    logging.basicConfig(level=config.log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+    logger.info("Authenticating with %s@%s, topic %s", config.kafka_username, config.kafka_server, config.kafka_topic)
+    consumer = build_consumer(config)
+    consumer.subscribe([config.kafka_topic], on_assign=lambda _, partitions: logger.info("Assigned %s", partitions))
+    db = Database(config.database_url)
+    record = open(args.record, "ab") if args.record else None  # noqa: SIM115 (closed in finally)
+
+    totals: dict[str, int] = {"messages": 0, "unparsed": 0}
+    last_stats = time.monotonic()
 
     try:
         while True:
             msg = consumer.poll(timeout=1.0)
-            if msg is None: continue
+            if msg is not None:
+                if msg.error():
+                    raise KafkaException(msg.error())
 
-            if msg.error():
-                raise KafkaException(msg.error())
-            else:
                 data = msg.value()
                 if data:
-                    train_status = process_train_status(data)
-                    if train_status:
-                        # print(train_status)
-                        db.save_train_updates(train_status)
-                # Store the offset associated with msg to a local cache.
+                    totals["messages"] += 1
+                    if record:
+                        record.write(data.rstrip(b"\n") + b"\n")
+
+                    message = parse_message(data)
+                    if message is None:
+                        totals["unparsed"] += 1
+                    else:
+                        for key, value in db.handle_message(message).items():
+                            totals[key] = totals.get(key, 0) + value
+
                 # Stored offsets are committed to Kafka by a background thread every 'auto.commit.interval.ms'.
                 consumer.store_offsets(msg)
 
+            if time.monotonic() - last_stats >= STATS_INTERVAL_SECONDS:
+                logger.info("Last %ss: %s", STATS_INTERVAL_SECONDS, ", ".join(f"{k}={v}" for k, v in totals.items()))
+                totals = dict.fromkeys(totals, 0)
+                last_stats = time.monotonic()
+
     except KeyboardInterrupt:
-        sys.stderr.write('%% Aborted by user\n')
+        logger.info("Aborted by user")
 
     finally:
         # Close down consumer to commit final offsets.
         consumer.close()
+        db.close()
+        if record:
+            record.close()
+
 
 if __name__ == "__main__":
     main()
