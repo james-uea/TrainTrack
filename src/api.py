@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import threading
+import time
 import tomllib
 from collections import OrderedDict
 from collections.abc import AsyncIterable
@@ -99,6 +100,13 @@ class TrainDetail(BaseModel):
     position: TrainPosition | None
 
 
+class Station(BaseModel):
+    crs: str
+    name: str
+    lon: float
+    lat: float
+
+
 class PositionChanges(BaseModel):
     """What changed in one tick. Trains not listed are unchanged: a client moves them on with `left` and `due`."""
     version: int
@@ -123,6 +131,7 @@ VERSION = tomllib.loads((Path(__file__).parent.parent / "pyproject.toml").read_t
 MAX_SEGMENTS = 500  # per request
 # Track tiles exist from the zoom the whole network first reads as lines down to the zoom MapLibre overzooms from
 TRACK_ZOOMS = range(5, 15)
+STATIONS_REFRESH = 3600.0  # seconds; stations change only with the timetable
 TRACK_TILES_CACHED = 2048  # most recently used tiles kept in memory; the Track Model changes only when reloaded
 WEB_DIST = Path(__file__).parent.parent / "web" / "dist"
 CALL_TYPES = {"OR", "IP", "DT", "OPOR", "OPIP", "OPDT"}
@@ -213,6 +222,7 @@ class MapService:
         self.ticked = asyncio.Event()
         self._segments: dict[str, list[tuple[float, float]]] = {}
         self._track_tiles: OrderedDict[tuple[int, int, int], bytes] = OrderedDict()
+        self._stations: tuple[float, list[Station]] | None = None  # (loaded at, stations)
 
     def tick(self):
         snapshot = self.live.tick()
@@ -286,6 +296,13 @@ class MapService:
                 self._segments[pair] = line
             found[pair] = self._segments[pair]
         return found
+
+    def stations(self) -> list[Station]:
+        if self._stations is None or time.monotonic() - self._stations[0] > STATIONS_REFRESH:
+            stations = [Station(crs=crs, name=name, lon=round(lon, 5), lat=round(lat, 5))
+                        for crs, name, lon, lat in self.query("fetch_stations")]
+            self._stations = (time.monotonic(), stations)
+        return self._stations[1]
 
     def track_tile(self, z: int, x: int, y: int) -> bytes:
         key = (z, x, y)
@@ -368,6 +385,11 @@ def create_app(service: MapService | None = None, clock: Clock | None = None) ->
         between their `from_tiploc` and `to_tiploc`. Pairs that can't be placed are left out.
         """
         return current(app).segments(pairs)
+
+    @app.get("/api/stations", response_model=list[Station])
+    def stations() -> list[Station]:
+        """Every station trains call at, by CRS code, for search."""
+        return current(app).stations()
 
     @app.get("/tiles/track/{z}/{x}/{y}.pbf", include_in_schema=False)
     def track_tile(z: int, x: int, y: int) -> Response:

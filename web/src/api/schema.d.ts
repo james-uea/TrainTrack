@@ -87,6 +87,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/stations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Stations
+         * @description Every station trains call at, by CRS code, for search.
+         */
+        get: operations["stations_api_stations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/health": {
         parameters: {
             query?: never;
@@ -145,6 +165,17 @@ export interface components {
             active: number;
             /** Trains */
             trains: components["schemas"]["TrainPosition"][];
+        };
+        /** Station */
+        Station: {
+            /** Crs */
+            crs: string;
+            /** Name */
+            name: string;
+            /** Lon */
+            lon: number;
+            /** Lat */
+            lat: number;
         };
         /** TrainDetail */
         TrainDetail: {
@@ -410,6 +441,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    stations_api_stations_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Station"][];
                 };
             };
         };

@@ -3,14 +3,17 @@
   z-index: 3; /* above deck.gl, which draws in MapLibre's control layer */
   left: 12px;
   bottom: 28px;
-  margin: 0;
-  padding: 8px 12px;
-  list-style: none;
+  padding: 6px 8px 8px;
   background: var(--panel-bg);
   border-radius: 8px;
   box-shadow: 0 1px 4px rgb(0 0 0 / 0.2);
   font-size: 12px;
-  line-height: 1.7;
+}
+
+.legend ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
 .swatch {
@@ -19,5 +22,47 @@
   height: 10px;
   margin-right: 8px;
   border-radius: 50%;
-  vertical-align: -1px;
+}
+
+.band {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.band:hover {
+  background: rgb(0 0 0 / 0.05);
+}
+
+.band[aria-pressed="false"] {
+  color: #999;
+  text-decoration: line-through;
+}
+
+.band[aria-pressed="false"] .swatch {
+  opacity: 0.3;
+}
+
+.shortcut {
+  margin: 6px 4px 0;
+  padding: 3px 8px;
+  border: 1px solid #c8ccd2;
+  border-radius: 4px;
+  background: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+
+.shortcut[aria-pressed="true"] {
+  background: #1d1d1f;
+  border-color: #1d1d1f;
+  color: #fff;
 }

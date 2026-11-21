@@ -1,4 +1,5 @@
 import type { PickingInfo } from "@deck.gl/core";
+import { DataFilterExtension } from "@deck.gl/extensions";
 import { IconLayer, PathLayer, ScatterplotLayer } from "@deck.gl/layers";
 import { MapboxOverlay } from "@deck.gl/mapbox";
 import "maplibre-gl/dist/maplibre-gl.css";
@@ -19,6 +20,8 @@ const TRACK_TILES = [`${window.location.origin}/tiles/track/{z}/{x}/{y}.pbf`];
 const LABELS_FROM = "waterway_line_label";
 // From this zoom trains are drawn as arrows pointing the way they're going
 const ARROW_ZOOM = 9;
+// Hides trains in the legend's switched-off delay bands on the GPU, keeping indexes stable for picking
+const FILTER = [new DataFilterExtension({ filterSize: 1 })];
 
 /** Adds the overlay the draw loop feeds. It's made by TrainMap, so remounts (StrictMode) add the same one back. */
 function DeckOverlay({ overlay }: { overlay: MapboxOverlay }) {
@@ -56,12 +59,22 @@ export function TrainMap({ store, segments }: { store: TrainStore; segments: Seg
         : null,
     [route],
   );
-  const selectedRef = useRef({ rid: selected, routeLayer });
-  selectedRef.current = { rid: selected, routeLayer };
+  const hiddenBands = useUi((state) => state.hiddenBands);
+  const selectedRef = useRef({ rid: selected, routeLayer, hiddenBands });
+  selectedRef.current = { rid: selected, routeLayer, hiddenBands };
+
+  // Fly to whatever search picked
+  const focus = useUi((state) => state.focus);
+  useEffect(() => {
+    if (focus) mapRef.current?.flyTo({ center: [focus.lon, focus.lat], zoom: focus.zoom, duration: 1200 });
+  }, [focus]);
 
   useEffect(() => {
     let frame = 0;
     let revision = -1;
+    let filtered: ReadonlySet<string> | null = null;
+    let filteredRevision = -1;
+    let visible = new Float32Array(0);
     let positions = new Float32Array(0);
     let angles = new Float32Array(0);
     const segment = (key: string) => segments.get(key);
@@ -92,6 +105,15 @@ export function TrainMap({ store, segments }: { store: TrainStore; segments: Seg
         return;
       }
 
+      const { rid, routeLayer, hiddenBands } = selectedRef.current;
+      if (filtered !== hiddenBands || filteredRevision !== store.revision) {
+        filtered = hiddenBands;
+        filteredRevision = store.revision;
+        visible = new Float32Array(trains.length);
+        for (let i = 0; i < trains.length; i++)
+          visible[i] = hiddenBands.has(store.bands[i] ?? "unknown") ? 0 : 1;
+      }
+
       const data = {
         length: trains.length,
         attributes: {
@@ -99,10 +121,10 @@ export function TrainMap({ store, segments }: { store: TrainStore; segments: Seg
           getColor: { value: store.colours, size: 4, normalized: true },
           getFillColor: { value: store.colours, size: 4, normalized: true },
           getAngle: { value: angles, size: 1 },
+          getFilterValue: { value: visible, size: 1 },
         },
       };
       const arrows = zoomRef.current >= ARROW_ZOOM;
-      const { rid, routeLayer } = selectedRef.current;
       const at = rid ? store.indexOf(rid) : -1;
       overlay.setProps({
         layers: [
@@ -118,6 +140,8 @@ export function TrainMap({ store, segments }: { store: TrainStore; segments: Seg
                 getSize: 22,
                 sizeUnits: "pixels",
                 pickable: true,
+                extensions: FILTER,
+                filterRange: [1, 1],
               })
             : new ScatterplotLayer({
                 id: "train-dots",
@@ -129,6 +153,8 @@ export function TrainMap({ store, segments }: { store: TrainStore; segments: Seg
                 lineWidthUnits: "pixels",
                 getLineWidth: 0.75,
                 pickable: true,
+                extensions: FILTER,
+                filterRange: [1, 1],
               }),
           at >= 0 &&
             new ScatterplotLayer({

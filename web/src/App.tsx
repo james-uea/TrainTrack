@@ -6,6 +6,7 @@ import { Legend } from "./map/Legend";
 import { StatusBar } from "./map/StatusBar";
 import { TrainMap } from "./map/TrainMap";
 import { TrainPanel } from "./panel/TrainPanel";
+import { Search } from "./search/Search";
 import { useUi } from "./state";
 import { type LonLat, SegmentCache } from "./trains/segments";
 import { TrainStore } from "./trains/store";
@@ -38,6 +39,7 @@ export function App() {
       <TrainMap store={store} segments={segments} />
       <StatusBar store={store} />
       <Legend />
+      <Search store={store} />
       <TrainPanel />
     </Profiler>
   );

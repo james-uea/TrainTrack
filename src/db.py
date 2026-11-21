@@ -846,6 +846,22 @@ class Database:
         self.cur.execute("SELECT max(updated_at) FROM train_journeys")
         return self.cur.fetchone()[0]
 
+    def fetch_stations(self) -> list[tuple[str, str, float, float]]:
+        """
+        (crs, name, lon, lat) for every station trains call at publicly, one per CRS code. A station with several
+        TIPLOCs (platform groups, low-level platforms) is placed at its NaPTAN point where there is one.
+        """
+        self.cur.execute("""
+            WITH called AS (SELECT DISTINCT tiploc FROM train_stops WHERE location_type IN ('OR', 'IP', 'DT'))
+            SELECT DISTINCT ON (l.reservation_code) l.reservation_code, l.location_name, ST_X(t.geom), ST_Y(t.geom)
+            FROM locations l
+            JOIN called c ON c.tiploc = l.tiploc
+            JOIN tiploc_locations t ON t.tiploc = l.tiploc
+            WHERE l.reservation_code IS NOT NULL AND l.reservation_code <> 'XXX' AND t.quality <> 'suspect'
+            ORDER BY l.reservation_code, (t.source = 'naptan') DESC, l.tiploc
+        """)
+        return self.cur.fetchall()
+
     def fetch_track_tile(self, z: int, x: int, y: int) -> bytes:
         """
         A Mapbox Vector Tile of the Track Model's centrelines in web mercator tile z/x/y, one layer named `track`.

@@ -10,3 +10,4 @@ export type PositionChanges = components["schemas"]["PositionChanges"];
 export type TrainDetail = components["schemas"]["TrainDetail"];
 export type TrainStop = components["schemas"]["TrainStop"];
 export type Health = components["schemas"]["Health"];
+export type Station = components["schemas"]["Station"];

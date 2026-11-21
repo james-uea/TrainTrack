@@ -202,6 +202,29 @@
         }
       }
     },
+    "/api/stations": {
+      "get": {
+        "summary": "Stations",
+        "description": "Every station trains call at, by CRS code, for search.",
+        "operationId": "stations_api_stations_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Station"
+                  },
+                  "type": "array",
+                  "title": "Response Stations Api Stations Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/health": {
       "get": {
         "summary": "Health",
@@ -338,6 +361,34 @@
           "trains"
         ],
         "title": "PositionsResponse"
+      },
+      "Station": {
+        "properties": {
+          "crs": {
+            "type": "string",
+            "title": "Crs"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "lon": {
+            "type": "number",
+            "title": "Lon"
+          },
+          "lat": {
+            "type": "number",
+            "title": "Lat"
+          }
+        },
+        "type": "object",
+        "required": [
+          "crs",
+          "name",
+          "lon",
+          "lat"
+        ],
+        "title": "Station"
       },
       "TrainDetail": {
         "properties": {

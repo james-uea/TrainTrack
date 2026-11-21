@@ -1,7 +1,7 @@
 // Every train the map shows, kept outside React: the animation loop reads it on every frame
 import type { PositionChanges, PositionsResponse, TrainPosition } from "../api/client";
 import { ServerClock } from "../feed/serverClock";
-import { DELAY_BANDS, delayBand } from "./delay";
+import { DELAY_BANDS, type DelayBand, delayBand } from "./delay";
 import { isMoving } from "./motion";
 import { type SegmentCache, segmentKey } from "./segments";
 
@@ -18,6 +18,7 @@ export class TrainStore {
   // In draw order, rebuilt on each revision
   order: TrainPosition[] = [];
   colours = new Uint8Array(0);
+  bands: DelayBand[] = []; // each train's delay band, in draw order
   private indexes = new Map<string, number>();
 
   constructor(private segments: SegmentCache) {}
@@ -46,8 +47,9 @@ export class TrainStore {
     this.order = [...this.trains.values()];
     this.indexes = new Map(this.order.map((train, i) => [train.rid, i]));
     this.colours = new Uint8Array(this.order.length * 4);
+    this.bands = this.order.map((train) => delayBand(train.delay));
     this.order.forEach((train, i) => {
-      const [r, g, b] = BAND_COLOURS.get(delayBand(train.delay)) ?? [128, 128, 128];
+      const [r, g, b] = BAND_COLOURS.get(this.bands[i] as DelayBand) ?? [128, 128, 128];
       this.colours.set([r, g, b, train.confidence === "low" ? 150 : 255], i * 4);
     });
     this.segments.want(
