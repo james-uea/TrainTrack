@@ -5,9 +5,11 @@ and the v8 contains the actual data.
 '''
 
 import argparse
+import gzip
 import logging
 import re
 import time
+from collections.abc import Iterable, Iterator
 from datetime import datetime, timedelta
 from datetime import time as dtime
 from os import listdir
@@ -22,12 +24,15 @@ from util import LONDON, convert_to_bool, parse_time
 
 logger = logging.getLogger("initialise")
 
+# Journeys are written to the database in batches of this size while the file is streamed
+JOURNEY_BATCH_SIZE = 5000
+
 
 def get_latest(data_dir: str, ref: bool = False) -> str | None:
     files = [f for f in listdir(data_dir) if isfile(join(data_dir, f))]
 
     suffix = "_ref_v4" if ref else "_v8"
-    pattern = re.compile(rf'PPTimetable_(\d{{14}}){suffix}\.xml')
+    pattern = re.compile(rf'PPTimetable_(\d{{14}}){suffix}\.xml(\.gz)?')
 
     latest_date = None
     latest_file = None
@@ -43,6 +48,11 @@ def get_latest(data_dir: str, ref: bool = False) -> str | None:
 
     return join(data_dir, latest_file) if latest_file else None
 
+
+def open_timetable(path: str):
+    """Open a timetable file, transparently decompressing `.gz` downloads."""
+    return gzip.open(path, "rb") if path.endswith(".gz") else open(path, "rb")
+
 def fetch_ref_data(data_dir: str):
     loc_refs = {}
     toc_refs = {}
@@ -57,8 +67,8 @@ def fetch_ref_data(data_dir: str):
         raise FileNotFoundError(f"No reference file in {data_dir}")
 
     logger.info("Reading reference data from %s", ref_file)
-    tree = etree.parse(ref_file)
-    root = tree.getroot()
+    with open_timetable(ref_file) as f:
+        root = etree.parse(f).getroot()
 
     for child in root:
         tag = etree.QName(child).localname
@@ -154,26 +164,30 @@ def parse_journey(journey: etree._Element) -> Schedule:
     )
 
 
-def fetch_initial_journeys(data_dir: str) -> list[Schedule]:
-    journeys_file = get_latest(data_dir=data_dir, ref=False)
-    if not journeys_file:
-        raise FileNotFoundError(f"No journeys file in {data_dir}")
+def iter_journeys(path: str) -> Iterator[Schedule]:
+    """
+    Stream `Journey` elements from the timetable one at a time. Each element is freed once parsed,
+    so memory stays flat however large the file is (the full tree is ~2.5 GB for a day's timetable).
+    """
+    with open_timetable(path) as f:
+        for _, journey in etree.iterparse(f, events=("end",), tag="{*}Journey", huge_tree=True):
+            yield parse_journey(journey)
+            # Free this journey and any already-processed siblings (e.g. skipped Associations)
+            journey.clear(keep_tail=False)
+            parent = journey.getparent()
+            while journey.getprevious() is not None:
+                del parent[0]
 
-    logger.info("Reading journeys from %s", journeys_file)
-    tree = etree.parse(journeys_file)
-    root: etree._Element = tree.getroot()
 
-    schedules = []
-    for child in root:
-        tag = etree.QName(child).localname
-
-        if tag == "Journey":
-            schedules.append(parse_journey(child))
-        elif tag == "Association":
-            # ToDo: implement associations
-            pass
-
-    return schedules
+def batched(items: Iterable[Schedule], size: int) -> Iterator[list[Schedule]]:
+    batch: list[Schedule] = []
+    for item in items:
+        batch.append(item)
+        if len(batch) >= size:
+            yield batch
+            batch = []
+    if batch:
+        yield batch
 
 
 def run(db: Database, data_dir: str):
@@ -190,12 +204,17 @@ def run(db: Database, data_dir: str):
 
     logger.info("Finished ref init (%.1fs)", time.time() - start)
 
-    schedules = fetch_initial_journeys(data_dir)
+    journeys_file = get_latest(data_dir=data_dir, ref=False)
+    if not journeys_file:
+        raise FileNotFoundError(f"No journeys file in {data_dir}")
 
     start = time.time()
-    logger.info("Started journey init (%d journeys)", len(schedules))
-    db.add_schedules(schedules)
-    logger.info("Finished journey init (%.1fs)", time.time() - start)
+    logger.info("Started journey init from %s", journeys_file)
+    total = 0
+    for batch in batched(iter_journeys(journeys_file), JOURNEY_BATCH_SIZE):
+        db.add_schedules(batch)
+        total += len(batch)
+    logger.info("Finished journey init: %d journeys (%.1fs)", total, time.time() - start)
 
 
 def seconds_until(at: dtime) -> float:
