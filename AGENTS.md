@@ -10,6 +10,7 @@ Obsidian vault for this project is located @ /Users/james/Documents/ObsidianVaul
 Where the docs (README, `docs/`, the vault) and the code disagree, follow the code's conventions. End your final message with every discrepancy you found.
 
 ## Versioning and changelog
-- The version is in `pyproject.toml`, and `uv lock` copies it into `uv.lock`. It follows semantic versioning. Before 1.0, a finished milestone bumps the minor version (0.6.0 is Milestone 2), and fixes released between milestones bump the patch version.
-- Each change someone using or running the project would notice gets a line under `## Unreleased` in `CHANGELOG.md`, in the same commit or PR as the change. Use Keep a Changelog sections (Added, Changed, Fixed, Removed). Name new migrations, scripts and tables.
-- At a release, rename `## Unreleased` to the new version, start a new empty `## Unreleased`, update the version in `pyproject.toml`, run `uv lock`, and commit them together.
+Every milestone, and every PR that changes behaviour, does three things in the same PR:
+- Bumps the version in `pyproject.toml`. This follows semver; before 1.0, bump the minor version for features or schema changes and the patch version for fixes.
+- Runs `uv lock`, so `uv.lock` carries the new version.
+- Adds a [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) entry under the new version in `CHANGELOG.md` (Added, Changed, Fixed, Removed). Name new migrations, scripts and tables.
