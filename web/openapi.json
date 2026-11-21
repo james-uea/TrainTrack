@@ -8,8 +8,27 @@
     "/api/positions": {
       "get": {
         "summary": "Positions",
-        "description": "Every placed train at the latest tick.",
+        "description": "Every placed train at the latest tick, or at `at` (an ISO time) to look at another moment. A page replaying\nthe past asks again every few seconds with a later `at`; `clock` in the reply is then `replay:<at>`.",
         "operationId": "positions_api_positions_get",
+        "parameters": [
+          {
+            "name": "at",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "At"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -17,6 +36,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PositionsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
@@ -225,6 +254,29 @@
         }
       }
     },
+    "/api/operators": {
+      "get": {
+        "summary": "Operators",
+        "description": "Train operators by code, for search.",
+        "operationId": "operators_api_operators_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Operator"
+                  },
+                  "type": "array",
+                  "title": "Response Operators Api Operators Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/health": {
       "get": {
         "summary": "Health",
@@ -324,6 +376,24 @@
           "last_write"
         ],
         "title": "Health"
+      },
+      "Operator": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "name"
+        ],
+        "title": "Operator"
       },
       "PositionsResponse": {
         "properties": {

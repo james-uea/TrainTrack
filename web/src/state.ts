@@ -14,11 +14,13 @@ interface UiState {
   selected: string | null; // rid, kept in the address as ?train= so a train can be linked to
   hiddenBands: ReadonlySet<DelayBand>; // delay bands the map leaves out
   focus: Focus | null; // where the map should fly to next
+  operator: { code: string; name: string } | null; // show only this operator's trains
   setStatus: (status: FeedStatus) => void;
   select: (rid: string | null) => void;
   toggleBand: (band: DelayBand) => void;
   setHiddenBands: (bands: Iterable<DelayBand>) => void;
   focusOn: (focus: Focus) => void;
+  showOperator: (operator: { code: string; name: string } | null) => void;
 }
 
 function trainInAddress(): string | null {
@@ -37,6 +39,7 @@ export const useUi = create<UiState>((set) => ({
   selected: trainInAddress(),
   hiddenBands: new Set(),
   focus: null,
+  operator: null,
   setStatus: (status) => set({ status }),
   select: (selected) => {
     setTrainInAddress(selected);
@@ -50,4 +53,5 @@ export const useUi = create<UiState>((set) => ({
     }),
   setHiddenBands: (bands) => set({ hiddenBands: new Set(bands) }),
   focusOn: (focus) => set({ focus }),
+  showOperator: (operator) => set({ operator }),
 }));

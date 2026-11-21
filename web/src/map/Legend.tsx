@@ -9,10 +9,22 @@ export function Legend() {
   const hidden = useUi((state) => state.hiddenBands);
   const toggleBand = useUi((state) => state.toggleBand);
   const setHiddenBands = useUi((state) => state.setHiddenBands);
+  const operator = useUi((state) => state.operator);
+  const showOperator = useUi((state) => state.showOperator);
   const lateOnly = hidden.size === NOT_LATE.length && NOT_LATE.every((band) => hidden.has(band));
 
   return (
     <div className={styles.legend}>
+      {operator && (
+        <button
+          type="button"
+          className={styles.operator}
+          onClick={() => showOperator(null)}
+          title="Show all operators"
+        >
+          {operator.name} only <span aria-hidden="true">×</span>
+        </button>
+      )}
       <ul aria-label="Delay colours: click to show or hide">
         {DELAY_BANDS.map(({ band, label, colour }) => (
           <li key={band}>

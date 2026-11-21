@@ -1,4 +1,4 @@
-import type { Station, TrainPosition } from "../api/client";
+import type { Operator, Station, TrainPosition } from "../api/client";
 
 /**
  * Stations for a search, best first: the CRS code exactly, then names starting with the query, then names with a
@@ -36,4 +36,21 @@ export function matchTrains(trains: Iterable<TrainPosition>, query: string, limi
     (a, b) => (a.headcode ?? "").localeCompare(b.headcode ?? "") || (a.toc ?? "").localeCompare(b.toc ?? ""),
   );
   return found.slice(0, limit);
+}
+
+/** Operators whose code is the query, or whose name has a word starting with it ("lner", "great", "GW"). */
+export function matchOperators(operators: Operator[], query: string, limit = 4): Operator[] {
+  const q = query.trim().toLowerCase();
+  if (q.length < 2) return [];
+  return operators
+    .filter(
+      ({ code, name }) =>
+        code.toLowerCase() === q ||
+        name
+          .toLowerCase()
+          .split(/\s+/)
+          .some((word) => word.startsWith(q)),
+    )
+    .sort((a, b) => Number(b.code.toLowerCase() === q) - Number(a.code.toLowerCase() === q))
+    .slice(0, limit);
 }

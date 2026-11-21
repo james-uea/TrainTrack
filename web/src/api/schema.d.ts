@@ -13,7 +13,8 @@ export interface paths {
         };
         /**
          * Positions
-         * @description Every placed train at the latest tick.
+         * @description Every placed train at the latest tick, or at `at` (an ISO time) to look at another moment. A page replaying
+         *     the past asks again every few seconds with a later `at`; `clock` in the reply is then `replay:<at>`.
          */
         get: operations["positions_api_positions_get"];
         put?: never;
@@ -107,6 +108,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/operators": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Operators
+         * @description Train operators by code, for search.
+         */
+        get: operations["operators_api_operators_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/health": {
         parameters: {
             query?: never;
@@ -149,6 +170,13 @@ export interface components {
             placed: number;
             /** Last Write */
             last_write: string | null;
+        };
+        /** Operator */
+        Operator: {
+            /** Code */
+            code: string;
+            /** Name */
+            name: string;
         };
         /** PositionsResponse */
         PositionsResponse: {
@@ -327,7 +355,9 @@ export type $defs = Record<string, never>;
 export interface operations {
     positions_api_positions_get: {
         parameters: {
-            query?: never;
+            query?: {
+                at?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -341,6 +371,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PositionsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -461,6 +500,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Station"][];
+                };
+            };
+        };
+    };
+    operators_api_operators_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Operator"][];
                 };
             };
         };

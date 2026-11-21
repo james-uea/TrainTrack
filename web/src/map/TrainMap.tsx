@@ -60,8 +60,9 @@ export function TrainMap({ store, segments }: { store: TrainStore; segments: Seg
     [route],
   );
   const hiddenBands = useUi((state) => state.hiddenBands);
-  const selectedRef = useRef({ rid: selected, routeLayer, hiddenBands });
-  selectedRef.current = { rid: selected, routeLayer, hiddenBands };
+  const operator = useUi((state) => state.operator?.code ?? null);
+  const selectedRef = useRef({ rid: selected, routeLayer, hiddenBands, operator });
+  selectedRef.current = { rid: selected, routeLayer, hiddenBands, operator };
 
   // Fly to whatever search picked
   const focus = useUi((state) => state.focus);
@@ -73,6 +74,7 @@ export function TrainMap({ store, segments }: { store: TrainStore; segments: Seg
     let frame = 0;
     let revision = -1;
     let filtered: ReadonlySet<string> | null = null;
+    let filteredOperator: string | null = null;
     let filteredRevision = -1;
     let visible = new Float32Array(0);
     let positions = new Float32Array(0);
@@ -105,13 +107,17 @@ export function TrainMap({ store, segments }: { store: TrainStore; segments: Seg
         return;
       }
 
-      const { rid, routeLayer, hiddenBands } = selectedRef.current;
-      if (filtered !== hiddenBands || filteredRevision !== store.revision) {
+      const { rid, routeLayer, hiddenBands, operator } = selectedRef.current;
+      if (filtered !== hiddenBands || filteredOperator !== operator || filteredRevision !== store.revision) {
         filtered = hiddenBands;
+        filteredOperator = operator;
         filteredRevision = store.revision;
         visible = new Float32Array(trains.length);
-        for (let i = 0; i < trains.length; i++)
-          visible[i] = hiddenBands.has(store.bands[i] ?? "unknown") ? 0 : 1;
+        for (let i = 0; i < trains.length; i++) {
+          const shown =
+            !hiddenBands.has(store.bands[i] ?? "unknown") && (!operator || trains[i]?.toc === operator);
+          visible[i] = shown ? 1 : 0;
+        }
       }
 
       const data = {

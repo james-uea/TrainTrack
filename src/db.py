@@ -862,6 +862,15 @@ class Database:
         """)
         return self.cur.fetchall()
 
+    def fetch_operators(self) -> list[tuple[str, str]]:
+        """(code, name) for every operator with a known name that runs trains in the timetable."""
+        self.cur.execute("""
+            SELECT o.toc, o.name FROM train_operator_codes o
+            WHERE o.name IS NOT NULL AND EXISTS (SELECT 1 FROM train_journeys j WHERE j.toc_code = o.toc)
+            ORDER BY o.name
+        """)
+        return self.cur.fetchall()
+
     def fetch_track_tile(self, z: int, x: int, y: int) -> bytes:
         """
         A Mapbox Vector Tile of the Track Model's centrelines in web mercator tile z/x/y, one layer named `track`.

@@ -63,3 +63,14 @@ describe("placeTrain", () => {
     expect(placeTrain(dwelling, 0, () => L)).toEqual({ lon: 1.3, lat: 52.6, bearing: 90 });
   });
 });
+
+describe("replayStart", () => {
+  it("reads ?at= as UTC unless it gives a zone, and ignores nonsense", async () => {
+    const { replayStart } = await import("../feed/feed");
+    expect(replayStart("?at=2026-11-21T14:30")).toBe(Date.UTC(2026, 10, 21, 14, 30));
+    expect(replayStart("?at=2026-11-21T14:30Z")).toBe(Date.UTC(2026, 10, 21, 14, 30));
+    expect(replayStart("?at=2026-11-21T14:30+01:00")).toBe(Date.UTC(2026, 10, 21, 13, 30));
+    expect(replayStart("?at=soon")).toBeNull();
+    expect(replayStart("")).toBeNull();
+  });
+});

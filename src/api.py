@@ -16,7 +16,7 @@ import tomllib
 from collections import OrderedDict
 from collections.abc import AsyncIterable
 from contextlib import asynccontextmanager, suppress
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -30,7 +30,7 @@ from pydantic import BaseModel
 
 from config import load_config
 from db import Database
-from live import TICK, Clock, LivePositions, Snapshot
+from live import TICK, Clock, LivePositions, Snapshot, SteppedClock
 from positions import Journey, Position, route
 
 logger = logging.getLogger(__name__)
@@ -105,6 +105,11 @@ class Station(BaseModel):
     name: str
     lon: float
     lat: float
+
+
+class Operator(BaseModel):
+    code: str  # as in each train's `toc`
+    name: str
 
 
 class PositionChanges(BaseModel):
@@ -209,7 +214,12 @@ class MapService:
 
     def __init__(self, database_url: str, clock: Clock):
         self.clock = clock
+        self.database_url = database_url
         self.live = LivePositions(Database(database_url), clock)
+        # Positions at a moment a page asks for (?at=), separate from the service's own clock. Created on first use;
+        # a page replaying forward asks for moments a few seconds apart, which is a cheap tick
+        self._replay: tuple[SteppedClock, LivePositions] | None = None
+        self._replay_lock = threading.Lock()
         self.snapshot: Snapshot | None = None
         self.version = 0
         self.snapshot_bytes: bytes | None = None
@@ -297,6 +307,17 @@ class MapService:
             found[pair] = self._segments[pair]
         return found
 
+    def positions_at(self, at: datetime) -> bytes:
+        """Every placed train at `at`, shaped like /api/positions, for a page looking at the past."""
+        with self._replay_lock:
+            if self._replay is None:
+                clock = SteppedClock(at)
+                self._replay = (clock, LivePositions(Database(self.database_url), clock))
+            clock, live = self._replay
+            clock.start = at
+            snapshot = live.tick()
+        return to_json(snapshot_dict(snapshot, Clock(at), 0))
+
     def stations(self) -> list[Station]:
         if self._stations is None or time.monotonic() - self._stations[0] > STATIONS_REFRESH:
             stations = [Station(crs=crs, name=name, lon=round(lon, 5), lat=round(lat, 5))
@@ -354,9 +375,16 @@ def create_app(service: MapService | None = None, clock: Clock | None = None) ->
         return app_.state.service
 
     @app.get("/api/positions", response_model=PositionsResponse)
-    def positions() -> Response:
-        """Every placed train at the latest tick."""
-        return Response(current(app).snapshot_bytes, media_type="application/json")
+    def positions(at: datetime | None = None) -> Response:
+        """
+        Every placed train at the latest tick, or at `at` (an ISO time) to look at another moment. A page replaying
+        the past asks again every few seconds with a later `at`; `clock` in the reply is then `replay:<at>`.
+        """
+        if at is None:
+            return Response(current(app).snapshot_bytes, media_type="application/json")
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=UTC)
+        return Response(current(app).positions_at(at), media_type="application/json")
 
     @app.get("/api/trains/{rid}", response_model=TrainDetail)
     def train(rid: str) -> TrainDetail:
@@ -390,6 +418,11 @@ def create_app(service: MapService | None = None, clock: Clock | None = None) ->
     def stations() -> list[Station]:
         """Every station trains call at, by CRS code, for search."""
         return current(app).stations()
+
+    @app.get("/api/operators", response_model=list[Operator])
+    def operators() -> list[Operator]:
+        """Train operators by code, for search."""
+        return [Operator(code=code, name=name) for code, name in current(app).query("fetch_operators")]
 
     @app.get("/tiles/track/{z}/{x}/{y}.pbf", include_in_schema=False)
     def track_tile(z: int, x: int, y: int) -> Response:

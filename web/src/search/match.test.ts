@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Station, TrainPosition } from "../api/client";
-import { matchStations, matchTrains } from "./match";
+import { matchOperators, matchStations, matchTrains } from "./match";
 
 const station = (crs: string, name: string): Station => ({ crs, name, lon: 0, lat: 0 });
 const STATIONS = [
@@ -42,5 +42,18 @@ describe("matchTrains", () => {
 
   it("ignores queries that can't be a headcode", () => {
     expect(matchTrains(trains, "Leeds")).toEqual([]);
+  });
+});
+
+describe("matchOperators", () => {
+  const operators = [
+    { code: "GW", name: "Great Western Railway" },
+    { code: "GR", name: "LNER" },
+    { code: "LE", name: "Greater Anglia" },
+  ];
+  it("puts an exact code first, then names with a word starting with the query", () => {
+    expect(matchOperators(operators, "gr").map((o) => o.code)).toEqual(["GR", "GW", "LE"]);
+    expect(matchOperators(operators, "lner").map((o) => o.code)).toEqual(["GR"]);
+    expect(matchOperators(operators, "western").map((o) => o.code)).toEqual(["GW"]);
   });
 });

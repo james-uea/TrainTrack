@@ -1,10 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { Command } from "cmdk";
 import { useEffect, useMemo, useState } from "react";
-import { api, type Station } from "../api/client";
+import { api, type Operator, type Station } from "../api/client";
 import { useUi } from "../state";
 import type { TrainStore } from "../trains/store";
-import { matchStations, matchTrains } from "./match";
+import { matchOperators, matchStations, matchTrains } from "./match";
 import styles from "./Search.module.css";
 
 function useStations(enabled: boolean) {
@@ -16,13 +16,27 @@ function useStations(enabled: boolean) {
   });
 }
 
-/** Find a station (flies the map there) or a train by headcode (selects it): opened with / or Ctrl/Cmd+K. */
+function useOperators(enabled: boolean) {
+  return useQuery({
+    queryKey: ["operators"],
+    enabled,
+    staleTime: Number.POSITIVE_INFINITY,
+    queryFn: async () => (await api.GET("/api/operators")).data ?? [],
+  });
+}
+
+/**
+ * Find a station (flies the map there), an operator (shows only its trains) or a train by headcode (selects it).
+ * Opened with / or Ctrl/Cmd+K.
+ */
 export function Search({ store }: { store: TrainStore }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const select = useUi((state) => state.select);
   const focusOn = useUi((state) => state.focusOn);
   const { data: stations = [] } = useStations(open);
+  const { data: operators = [] } = useOperators(open);
+  const showOperator = useUi((state) => state.showOperator);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -38,6 +52,7 @@ export function Search({ store }: { store: TrainStore }) {
 
   const trains = useMemo(() => (open ? matchTrains(store.trains.values(), query) : []), [open, query, store]);
   const places = useMemo(() => matchStations(stations, query), [stations, query]);
+  const companies = useMemo(() => matchOperators(operators, query), [operators, query]);
 
   const close = () => {
     setOpen(false);
@@ -45,6 +60,10 @@ export function Search({ store }: { store: TrainStore }) {
   };
   const pickStation = (station: Station) => {
     focusOn({ lon: station.lon, lat: station.lat, zoom: 13 });
+    close();
+  };
+  const pickOperator = (operator: Operator) => {
+    showOperator(operator);
     close();
   };
   const pickTrain = (rid: string) => {
@@ -57,7 +76,7 @@ export function Search({ store }: { store: TrainStore }) {
   return (
     <>
       <button type="button" className={styles.opener} onClick={() => setOpen(true)}>
-        Search stations or headcodes <kbd>/</kbd>
+        Search stations, operators, headcodes <kbd>/</kbd>
       </button>
       <Command.Dialog
         open={open}
@@ -71,7 +90,7 @@ export function Search({ store }: { store: TrainStore }) {
           className={styles.input}
           value={query}
           onValueChange={setQuery}
-          placeholder="Station name, CRS code or headcode"
+          placeholder="Station, CRS code, operator or headcode"
         />
         <Command.List className={styles.list}>
           {query.trim() && <Command.Empty className={styles.empty}>Nothing found</Command.Empty>}
@@ -93,6 +112,21 @@ export function Search({ store }: { store: TrainStore }) {
                         ? "on time"
                         : `${train.delay} min late`}
                   </span>
+                </Command.Item>
+              ))}
+            </Command.Group>
+          )}
+          {companies.length > 0 && (
+            <Command.Group heading="Operators" className={styles.group}>
+              {companies.map((operator) => (
+                <Command.Item
+                  key={operator.code}
+                  value={`operator-${operator.code}`}
+                  onSelect={() => pickOperator(operator)}
+                  className={styles.item}
+                >
+                  {operator.name}
+                  <span className={styles.detail}>show only its trains</span>
                 </Command.Item>
               ))}
             </Command.Group>

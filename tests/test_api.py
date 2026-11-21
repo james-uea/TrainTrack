@@ -43,6 +43,10 @@ class StubService:
     def tick(self):
         pass
 
+    def positions_at(self, at):
+        self.asked_at = at
+        return self.snapshot_bytes
+
     async def run(self):
         pass
 
@@ -144,3 +148,10 @@ def test_track_tiles_only_exist_where_the_map_asks_for_them():
     with client() as api:
         assert api.get("/tiles/track/3/3/2.pbf").status_code == 404  # below the zoom the track starts at
         assert api.get("/tiles/track/8/300/0.pbf").status_code == 404  # x past the edge of the world
+
+
+def test_positions_at_another_moment_read_a_time_without_a_zone_as_utc():
+    service = StubService()
+    with TestClient(create_app(service)) as api:
+        assert api.get("/api/positions?at=2026-11-21T14:30").status_code == 200
+    assert service.asked_at == datetime(2026, 11, 21, 14, 30, tzinfo=UTC)
