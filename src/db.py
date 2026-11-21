@@ -220,6 +220,26 @@ class Database:
             [(tiploc, tiploc) for tiploc in set(tiplocs) if tiploc],
         )
 
+    def add_tiploc_locations(self, locations: list):
+        """Replace TIPLOC coordinates (from tiploc_locations.py), leaving rows whose values haven't changed alone."""
+        self.cur.executemany("""
+            INSERT INTO tiploc_locations (tiploc, name, geom, easting, northing, source, quality)
+            VALUES (%s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326), %s, %s, %s, %s)
+            ON CONFLICT (tiploc) DO UPDATE SET
+                name = EXCLUDED.name, geom = EXCLUDED.geom, easting = EXCLUDED.easting,
+                northing = EXCLUDED.northing, source = EXCLUDED.source, quality = EXCLUDED.quality, updated_at = now()
+            WHERE (tiploc_locations.name, tiploc_locations.geom, tiploc_locations.easting, tiploc_locations.northing,
+                    tiploc_locations.source, tiploc_locations.quality)
+                IS DISTINCT FROM (EXCLUDED.name, EXCLUDED.geom, EXCLUDED.easting, EXCLUDED.northing,
+                    EXCLUDED.source, EXCLUDED.quality)
+        """, [(
+            location.tiploc, location.name, location.lon, location.lat, location.easting, location.northing,
+            location.source, location.quality,
+        ) for location in locations])
+        # A TIPLOC no source has any more (e.g. a removed override with no other point) loses its row
+        self.cur.execute("DELETE FROM tiploc_locations WHERE NOT (tiploc = ANY(%s))", ([location.tiploc for location in locations],))
+        self.conn.commit()
+
     # Timetable (bulk, from initialise.py)
 
     def add_schedules(self, schedules: list[Schedule]):
