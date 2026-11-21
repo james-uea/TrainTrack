@@ -1,5 +1,6 @@
 .bar {
   position: absolute;
+  z-index: 3; /* above deck.gl, which draws in MapLibre's control layer */
   top: 12px;
   left: 12px;
   display: flex;

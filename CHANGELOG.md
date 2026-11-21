@@ -16,6 +16,8 @@ Milestone 3: the live map.
 - `GET /api/segments?pairs=FROM>TO`: the track path between pairs of stops, simplified, for drawing trains along it
 - The map page: every placed train on an OpenFreeMap basemap, coloured by delay, moving smoothly along the track between server ticks and shown as arrows pointing the way it's going from zoom 9. Hovering a train shows its headcode, operator and delay; a status bar shows the clock and how many trains are placed
 - `GET /tiles/track/{z}/{x}/{y}.pbf`: the Track Model's lines as vector tiles (zoom 5–14), built on request with PostGIS (`Database.fetch_track_tile`) and kept in memory. The map draws them under the trains
+- The train panel: click a train for its headcode, operator, origin and destination, how late it is and why, and its stations with planned, expected and actual times and platforms, marking where the train is now. Passing points and operational stops are behind a toggle. The train's route is drawn on the map, the selected train is ringed, and `?train=<rid>` in the address opens it directly
+- Each stop in `GET /api/trains/{rid}` says whether it's `public`: an origin, calling point or destination passengers can use, as opposed to an operational stop or a passing point
 - `?bench=1` on the map measures 60 s of frames and React renders; `pnpm bench` runs it in headless Chrome, with `--throttle 4` to slow the CPU and `?renderer=geojson` to compare deck.gl with a MapLibre GeoJSON source
 - Dependencies: `fastapi`, `uvicorn[standard]`; `httpx2` for tests. Front end: React, MapLibre GL (`react-map-gl`), deck.gl, TanStack Query, Zustand, `openapi-fetch`, `cmdk`, `cheap-ruler`; Vite, TypeScript 6, Vitest, Biome, `openapi-typescript`, Playwright
 

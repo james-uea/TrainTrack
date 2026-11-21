@@ -1,5 +1,5 @@
 import type { PickingInfo } from "@deck.gl/core";
-import { IconLayer, ScatterplotLayer } from "@deck.gl/layers";
+import { IconLayer, PathLayer, ScatterplotLayer } from "@deck.gl/layers";
 import { MapboxOverlay } from "@deck.gl/mapbox";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -8,6 +8,7 @@ import { useUi } from "../state";
 import { placeTrain } from "../trains/motion";
 import type { SegmentCache } from "../trains/segments";
 import type { TrainStore } from "../trains/store";
+import { useTrain } from "../trains/useTrain";
 import { ARROW_MAPPING, arrowAtlas } from "./arrow";
 import { drawGeojsonTrains, geojsonRenderer } from "./geojsonTrains";
 
@@ -33,7 +34,30 @@ export function TrainMap({ store, segments }: { store: TrainStore; segments: Seg
   const zoomRef = useRef(INITIAL_VIEW.zoom);
   const mapRef = useRef<MapRef>(null);
   const select = useUi((state) => state.select);
+  const selected = useUi((state) => state.selected);
   const atlas = useMemo(() => arrowAtlas(), []);
+
+  // The selected train's route, drawn under the trains; the draw loop reads it from a ref so it never restarts
+  const { data: train } = useTrain(selected);
+  const route = train?.rid === selected ? train?.route : undefined;
+  const routeLayer = useMemo(
+    () =>
+      route && route.length > 1
+        ? new PathLayer({
+            id: "selected-route",
+            data: [route],
+            getPath: (path: [number, number][]) => path,
+            getColor: [29, 29, 31, 150],
+            getWidth: 4,
+            widthUnits: "pixels",
+            capRounded: true,
+            jointRounded: true,
+          })
+        : null,
+    [route],
+  );
+  const selectedRef = useRef({ rid: selected, routeLayer });
+  selectedRef.current = { rid: selected, routeLayer };
 
   useEffect(() => {
     let frame = 0;
@@ -78,8 +102,11 @@ export function TrainMap({ store, segments }: { store: TrainStore; segments: Seg
         },
       };
       const arrows = zoomRef.current >= ARROW_ZOOM;
+      const { rid, routeLayer } = selectedRef.current;
+      const at = rid ? store.indexOf(rid) : -1;
       overlay.setProps({
         layers: [
+          routeLayer,
           arrows
             ? new IconLayer({
                 // Each kind has its own id: deck.gl matches layers by id, and won't carry one's state to the other
@@ -103,6 +130,20 @@ export function TrainMap({ store, segments }: { store: TrainStore; segments: Seg
                 getLineWidth: 0.75,
                 pickable: true,
               }),
+          at >= 0 &&
+            new ScatterplotLayer({
+              id: "selected-train",
+              data: [at],
+              getPosition: () => [positions[at * 2] ?? 0, positions[at * 2 + 1] ?? 0],
+              updateTriggers: { getPosition: now },
+              getRadius: arrows ? 15 : 8,
+              radiusUnits: "pixels",
+              filled: false,
+              stroked: true,
+              getLineColor: [29, 29, 31, 230],
+              lineWidthUnits: "pixels",
+              getLineWidth: 2,
+            }),
         ],
         getTooltip: ({ index }: PickingInfo) => {
           const train = store.order[index];

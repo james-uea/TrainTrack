@@ -656,6 +656,10 @@
             "type": "boolean",
             "title": "Is Call"
           },
+          "public": {
+            "type": "boolean",
+            "title": "Public"
+          },
           "planned_arrival": {
             "anyOf": [
               {
@@ -790,6 +794,7 @@
           "name",
           "crs",
           "is_call",
+          "public",
           "planned_arrival",
           "planned_departure",
           "planned_pass",

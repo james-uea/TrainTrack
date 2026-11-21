@@ -80,7 +80,7 @@ def test_platform_hidden_when_darwin_suppresses_it_and_public_times_used_for_cal
     row = ("NRCH", "Norwich", "NRW", "OR", None, public, None, working, None, None, None, None, None, None, None,
            "3", True, True, False)
     stop = train_stop(row)
-    assert (stop.is_call, stop.planned_departure, stop.platform) == (True, public, None)
+    assert (stop.is_call, stop.public, stop.planned_departure, stop.platform) == (True, True, public, None)
 
 
 def train_dict(rid, **changes):

@@ -18,6 +18,7 @@ export class TrainStore {
   // In draw order, rebuilt on each revision
   order: TrainPosition[] = [];
   colours = new Uint8Array(0);
+  private indexes = new Map<string, number>();
 
   constructor(private segments: SegmentCache) {}
 
@@ -32,12 +33,18 @@ export class TrainStore {
     this.accept(changes.version, changes.at, changes.clock, changes.active);
   }
 
+  /** Where a train is in `order` (and the drawing arrays), or -1 if it isn't on the map. */
+  indexOf(rid: string): number {
+    return this.indexes.get(rid) ?? -1;
+  }
+
   private accept(version: number, at: string, clock: string, active: number) {
     this.version = version;
     this.active = active;
     this.clockName = clock;
     this.clock.update(at, clock);
     this.order = [...this.trains.values()];
+    this.indexes = new Map(this.order.map((train, i) => [train.rid, i]));
     this.colours = new Uint8Array(this.order.length * 4);
     this.order.forEach((train, i) => {
       const [r, g, b] = BAND_COLOURS.get(delayBand(train.delay)) ?? [128, 128, 128];

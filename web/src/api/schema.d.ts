@@ -224,6 +224,8 @@ export interface components {
             crs: string | null;
             /** Is Call */
             is_call: boolean;
+            /** Public */
+            public: boolean;
             /** Planned Arrival */
             planned_arrival: string | null;
             /** Planned Departure */

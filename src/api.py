@@ -67,7 +67,8 @@ class TrainStop(BaseModel):
     tiploc: str
     name: str | None
     crs: str | None
-    is_call: bool
+    is_call: bool  # the train stops here, including operational stops (crew changes, reversals)
+    public: bool  # passengers can get on or off: an origin, calling point or destination in the public timetable
     planned_arrival: datetime | None  # public times for calls, working times otherwise
     planned_departure: datetime | None
     planned_pass: datetime | None
@@ -125,6 +126,7 @@ TRACK_ZOOMS = range(5, 15)
 TRACK_TILES_CACHED = 2048  # most recently used tiles kept in memory; the Track Model changes only when reloaded
 WEB_DIST = Path(__file__).parent.parent / "web" / "dist"
 CALL_TYPES = {"OR", "IP", "DT", "OPOR", "OPIP", "OPDT"}
+PUBLIC_TYPES = {"OR", "IP", "DT"}
 
 
 def position_dict(journey: Journey, position: Position) -> dict:
@@ -182,7 +184,7 @@ def train_stop(row: tuple) -> TrainStop:
      platform, platform_confirmed, platform_suppressed, cancelled) = row
     is_call = location_type in CALL_TYPES
     return TrainStop(
-        tiploc=tiploc, name=name, crs=crs, is_call=is_call,
+        tiploc=tiploc, name=name, crs=crs, is_call=is_call, public=location_type in PUBLIC_TYPES,
         planned_arrival=(public_arrival or working_arrival) if is_call else working_arrival,
         planned_departure=(public_departure or working_departure) if is_call else working_departure,
         planned_pass=working_pass,

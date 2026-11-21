@@ -1,5 +1,6 @@
 .legend {
   position: absolute;
+  z-index: 3; /* above deck.gl, which draws in MapLibre's control layer */
   left: 12px;
   bottom: 28px;
   margin: 0;
