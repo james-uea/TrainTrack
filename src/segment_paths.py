@@ -28,6 +28,11 @@ MAX_DETOUR = 3.0
 # Other tracks within this distance of a stop's nearest one are also tried as route ends (metres)
 PARALLEL_METRES = 30.0
 
+# A BPLAN point the day's trains would reach and leave faster than this (m/s, so 360 km/h) over more than
+# MIN_JUMP_METRES is in the wrong place
+MAX_SPEED = 100.0
+MIN_JUMP_METRES = 5000.0
+
 # Vertices closer than this to the simplified line are dropped before storing (metres)
 SIMPLIFY_METRES = 1.0
 
@@ -72,6 +77,10 @@ def update(db: Database, day: date, graph: TrackGraph | None = None) -> Counter:
     if not db.has_track_links():
         logger.info("No track model loaded (src/track_model.py), so no segment paths")
         return Counter()
+    flagged = db.flag_implausible_locations(day, MAX_SPEED, MIN_JUMP_METRES)
+    if flagged:
+        logger.info("%d BPLAN points are too far from their neighbours to be right, now suspect: %s",
+                    len(flagged), ", ".join(sorted(flagged)))
     pairs = db.fetch_new_segment_pairs(day)
     if not pairs:
         return Counter()

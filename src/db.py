@@ -583,6 +583,53 @@ class Database:
         self.cur.execute("SELECT source, quality, count(*) FROM tiploc_locations GROUP BY 1, 2")
         return {(source, quality): count for source, quality, count in self.cur.fetchall()}
 
+    def flag_implausible_locations(self, day, max_speed: float, min_distance: float) -> list[str]:
+        """
+        Mark BPLAN points suspect where the day's trains would have to cover more than `min_distance`
+        metres at over `max_speed` m/s both to reach them and to leave them: a point in the wrong place
+        that happens to be near some other track. Repeats until nothing changes, so that a wrong point
+        next to another wrong one is found once the first is out. Drops their segment paths.
+        """
+        flagged: list[str] = []
+        while True:
+            self.cur.execute(f"""
+                WITH placed AS (
+                    SELECT s.rid, s.sequence, s.tiploc, t.source,
+                        COALESCE(ST_SetSRID(ST_MakePoint(t.easting, t.northing), 27700), ST_Transform(t.geom, 27700)) AS point,
+                        COALESCE(s.working_departure, s.working_arrival, s.working_pass) AS at
+                    FROM train_stops s
+                    JOIN train_journeys j ON j.rid = s.rid
+                    JOIN tiploc_locations t ON t.tiploc = s.tiploc
+                    WHERE j.scheduled_start = %(day)s AND {USABLE_LOCATION}
+                ), legs AS (
+                    SELECT tiploc, source,
+                        ST_Distance(point, LAG(point) OVER w) AS from_distance,
+                        EXTRACT(EPOCH FROM at - LAG(at) OVER w) AS from_seconds,
+                        ST_Distance(point, LEAD(point) OVER w) AS to_distance,
+                        EXTRACT(EPOCH FROM LEAD(at) OVER w - at) AS to_seconds
+                    FROM placed
+                    WINDOW w AS (PARTITION BY rid ORDER BY sequence)
+                )
+                SELECT tiploc FROM legs
+                WHERE source = 'bplan' AND from_distance IS NOT NULL AND to_distance IS NOT NULL
+                GROUP BY tiploc
+                HAVING avg((
+                    from_distance > %(min_distance)s AND from_distance / GREATEST(from_seconds, 30) > %(max_speed)s
+                    AND to_distance > %(min_distance)s AND to_distance / GREATEST(to_seconds, 30) > %(max_speed)s
+                )::INTEGER) > 0.5
+            """, {"day": day, "max_speed": max_speed, "min_distance": min_distance})
+            found = [row[0] for row in self.cur.fetchall()]
+            if not found:
+                break
+            self.cur.execute("UPDATE tiploc_locations SET quality = 'suspect' WHERE tiploc = ANY(%s)", (found,))
+            flagged += found
+        if flagged:
+            self.cur.execute(
+                "DELETE FROM segment_paths WHERE from_tiploc = ANY(%(t)s) OR to_tiploc = ANY(%(t)s)", {"t": flagged},
+            )
+        self.conn.commit()
+        return flagged
+
     def has_track_links(self) -> bool:
         self.cur.execute("SELECT EXISTS (SELECT FROM track_links)")
         return self.cur.fetchone()[0]

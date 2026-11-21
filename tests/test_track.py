@@ -152,3 +152,28 @@ def test_segment_paths_for_a_days_timetable(db):
         ("AAA", "BBB", "track", None, 1200, 4326),
         ("BBB", "FAR", "straight", "off_network", 924, 4326),
     ]
+
+
+def test_a_bplan_point_too_far_from_its_neighbours_is_suspect(db):
+    db.replace_track_links(assign_nodes([
+        track_link("up1", (0, 0), (1000, 0)), track_link("up2", (1000, 0), (2000, 0)),
+        track_link("elsewhere", (60000, 0), (61000, 0)),  # some other line, 60 km away
+    ]))
+    db.add_tiploc_locations([
+        located("AAA", 100, 0, "naptan"), located("BBB", 1300, 0, "naptan"),
+        located("WRONG", 60500, 10, "bplan"),  # near track, so it snaps as good
+    ])
+    db.snap_tiploc_locations()
+    db.add_schedules([parse_schedule({
+        "rid": "202611218000005", "uid": "W00005", "trainId": "2T02", "ssd": "2026-11-21", "toc": "LE",
+        "OR": {"tpl": "AAA", "wtd": "10:00"},
+        "PP": {"tpl": "WRONG", "wtp": "10:02"},  # 60 km there and back in 4 minutes
+        "DT": {"tpl": "BBB", "wta": "10:04"},
+    })])
+
+    assert update(db, date(2026, 11, 21)) == {"track": 1}
+
+    db.cur.execute("SELECT quality FROM tiploc_locations WHERE tiploc = 'WRONG'")
+    assert db.cur.fetchone() == ("suspect",)
+    db.cur.execute("SELECT from_tiploc, to_tiploc FROM segment_paths")
+    assert db.cur.fetchall() == [("AAA", "BBB")]
