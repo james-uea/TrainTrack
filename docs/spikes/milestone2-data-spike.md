@@ -94,3 +94,29 @@ Uncovered calls are mostly buses (EDINAIR, HTRBUS2/3/5, LUTOBUS, DUNT, SANWBUS, 
 Metro and WBRNPKS. Uncovered passes are London and Leeds junctions with BPLAN placeholders (WATRLWC,
 LEEDSWJ, PRTOBJP, SURRQSJ, KNGXBEL, ROYAOJN). BPLAN-only points aren't checked: GLGCBSJ lands in the
 North Sea (lon 2.03), and the Track Model distance check in stage 5 should catch points like it.
+
+## Track geometry and segment paths (stages 4–5)
+
+Loaded in `nationalrail` on 21 Nov:
+
+- **Track Model:** 49,731 centrelines in `track_links` (57 MB), loaded in ~3 s. Link ends coincide exactly with
+  the 38,689 Track Model nodes; merging ends within 1 m gives 38,655. 129 connected components, the largest
+  holding 98.4% of nodes.
+- **Snapping** (`tiploc_locations`): within 500 m of track is good. A NaPTAN station further out is off_network
+  (17, placed and joined by straight lines). A BPLAN point further out is suspect (1,011, mostly sidings
+  and signals tens to hundreds of km out; GLGCBSJ is 218 km). Five more BPLAN points sit near the wrong
+  track (HOLME and PBLJWM on Scottish lines) and are caught by a speed check: over 360 km/h both into and
+  out of the point, more than 5 km each way.
+- **Segment paths:** 9,781 distinct consecutive placed-stop pairs for 21 Nov. 98.7% routed on track,
+  118 detours (track route > 3× straight; often genuine, e.g. the Carmarthen–Aberystwyth bus or the Looe
+  branch reversal), 8 with no connecting track, 4 off_network. Track/straight ratio: median 1.03, p90 1.17,
+  p99 2.08. ~11 s for every pair (graph build ~1 s); only new pairs on later runs. 8.8 MB.
+- **Routing ends:** each end may snap to any track within 30 m of its nearest one. Without this, ends on
+  opposite Up/Down lines went out to the next crossover and back; detours fell from 695 to 115.
+- **Sanity checks:** Norwich–Diss 32.1 km on track (30.8 km straight), Euston–Watford Junction 28.0 km,
+  Liverpool Street–Stratford 6.4 km, Waterloo–Clapham Junction 6.2 km.
+- `segment_paths_sample.geojson` (20 paths, blue = track, red = straight fallback) can be opened in
+  geojson.io.
+
+Coverage now (usable = good or off_network): passenger calls 97.2%, all calls 95.9%, passes 77.2%, all stops
+88.2%, call-to-call segments 94.6%. Passes dropped from 83% because suspect BPLAN points no longer count.
