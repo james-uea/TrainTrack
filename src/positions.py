@@ -98,6 +98,7 @@ class Position:
     fraction: float  # along from_tiploc -> to_tiploc
     delay_minutes: int | None  # at the last report; None with no reports yet
     last_report_age_s: float | None
+    due: datetime | None = None  # when the train is expected at to_tiploc, while running or held
 
 
 # A source of track paths: (from_tiploc, to_tiploc) -> (line in British National Grid, method), or None
@@ -243,22 +244,22 @@ def estimate_position(journey: Journey, at: datetime, paths: PathSource) -> Posi
         if due is not None and at >= due:
             if (there == limit and at < due + HOLD_LIMIT
                     and not timeline._seen(stops[there].actual_arrival or stops[there].actual_pass)):
-                return _running(stops, here, there, 1.0, "held", paths, confidence, delay, age)
+                return _running(stops, here, there, 1.0, "held", paths, confidence, delay, age, due)
             continue
 
         left = leaves or arrived or at
         span = (due - left).total_seconds() if due else 0
         fraction = min(max((at - left).total_seconds() / span, 0.0), 1.0) if span > 0 else 1.0
-        return _running(stops, here, there, fraction, "running", paths, confidence, delay, age)
+        return _running(stops, here, there, fraction, "running", paths, confidence, delay, age, due)
     return None
 
 
-def _running(stops, here, there, fraction, state, paths, confidence, delay, age) -> Position:
+def _running(stops, here, there, fraction, state, paths, confidence, delay, age, due) -> Position:
     line, method = _path(stops[here], stops[there], paths)
     (x, y), bearing = _point_on(line, fraction)
     lon, lat = TO_WGS84.transform(x, y)
     return Position(lat, lon, bearing, state, confidence(method, there - here - 1), stops[here].tiploc,
-                    stops[there].tiploc, fraction, delay, age.total_seconds() if age else None)
+                    stops[there].tiploc, fraction, delay, age.total_seconds() if age else None, due)
 
 
 def _path(start: Stop, end: Stop, paths: PathSource) -> tuple[LineString, str]:

@@ -493,8 +493,12 @@ class Database:
                 WHERE rid = %s AND sequence = %s
             """, rows)
 
-        if status.late_reason is not None:
-            self.cur.execute("UPDATE train_journeys SET late_reason = %s WHERE rid = %s", (status.late_reason, status.rid))
+        if rows or status.late_reason is not None:
+            # Forecasts and platforms change positions and the train panel too, not only new actual times
+            self.cur.execute(
+                "UPDATE train_journeys SET late_reason = COALESCE(%s, late_reason), updated_at = now() WHERE rid = %s",
+                (status.late_reason, status.rid),
+            )
 
         self.refresh_position(status.rid)
         return result
@@ -759,8 +763,11 @@ class Database:
         self.cur.execute("SELECT from_tiploc, to_tiploc, method, ST_AsBinary(geom) FROM segment_paths")
         return self.cur.fetchall()
 
-    def fetch_journeys_around(self, at) -> list[tuple]:
-        """Journeys whose planned times run from up to 15 minutes after `at` to up to 3 hours before it."""
+    def fetch_journeys_around(self, at, rids: list[str] | None = None) -> list[tuple]:
+        """
+        Journeys whose planned times run from up to 15 minutes after `at` to up to 3 hours before it, optionally
+        only among `rids`.
+        """
         self.cur.execute("""
             SELECT j.rid, j.train_id, j.toc_code, j.cancelled, j.deactivated
             FROM train_journeys j
@@ -773,8 +780,18 @@ class Database:
                     AND (%(at)s::timestamptz AT TIME ZONE 'Europe/London')::date
                 AND span.first_time <= %(at)s::timestamptz + INTERVAL '15 minutes'
                 AND span.last_time >= %(at)s::timestamptz - INTERVAL '3 hours'
-        """, {"at": at})
+                AND (%(rids)s::text[] IS NULL OR j.rid = ANY(%(rids)s::text[]))
+        """, {"at": at, "rids": rids})
         return self.cur.fetchall()
+
+    def fetch_changed_journeys(self, since) -> tuple[datetime, list[str]]:
+        """The database's time now, and the trains changed after `since` (all of them when `since` is None)."""
+        self.cur.execute("SELECT clock_timestamp()")
+        now = self.cur.fetchone()[0]
+        if since is None:
+            return now, []
+        self.cur.execute("SELECT rid FROM train_journeys WHERE updated_at > %s", (since,))
+        return now, [row[0] for row in self.cur.fetchall()]
 
     def fetch_position_stops(self, rids: list[str]) -> list[tuple]:
         """Stops in order with their usable point (British National Grid) and every time positions need."""

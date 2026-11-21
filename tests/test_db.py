@@ -277,3 +277,14 @@ def test_recorded_pass_missing_from_the_timetable(db):
     rows = db.cur.fetchall()
     assert [row[0] for row in rows] == ["BNBR", "KINSSTN", "AYNHOJ", "HEYFORD", "TACKLEY", "WVCTJN", "OXFDNNJ", "OXFD", "DIDCOTP"]
     assert rows[4] == ("TACKLEY", True, datetime(2026, 11, 21, 13, 51, tzinfo=LONDON))
+
+
+def test_a_forecast_alone_marks_the_train_changed(db):
+    db.add_schedules([parse_schedule(SCHEDULE)])
+    polled_at, _ = db.fetch_changed_journeys(None)
+    db.commit()
+
+    db.handle_message(status({"tpl": "DDD", "wtp": "00:05:30", "pass": {"et": "00:09"}}))
+
+    _, changed = db.fetch_changed_journeys(polled_at)
+    assert changed == [RID]

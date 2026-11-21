@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.7.0
+Milestone 3: the live map.
+
+### Added
+- `live.py`: keeps every train around the current moment in memory and estimates all positions on each tick, reloading only trains whose `updated_at` changed. Its clock runs live, frozen at a past moment (`fixed:`) or replaying the past (`replay:`); `--bench N` times N ticks
+
+### Changed
+- Positions carry `due`, when the train is expected at the stop it's heading for
+- Every applied train status update now sets `train_journeys.updated_at`, not only one with a new actual time, so forecast changes can be picked up
+
 ## 0.6.0
 Milestone 2: train positions on the real track.
 
