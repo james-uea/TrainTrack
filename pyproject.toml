@@ -1,6 +1,6 @@
 [project]
 name = "traintrack"
-version = "0.4.1"
+version = "0.5.0"
 description = "Live tracking of UK trains"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -14,6 +14,11 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "pytest>=9.2.0",
     "ruff>=0.16.6",
     "types-lxml>=2026.2.16",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
