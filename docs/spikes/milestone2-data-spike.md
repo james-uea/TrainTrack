@@ -138,3 +138,73 @@ uses the live data recorded 13:48–14:51 UTC on 21 Nov.
   a report, at passing points Darwin never reports (e.g. Heald Green South Jn). Only calls hold now.
 
 `positions_sample.geojson` holds all 2,252 positions at 14:45 (green high, orange medium, red low).
+
+## Accuracy check (stage 7)
+
+`accuracy_check.py` takes every actual arrival or pass reported at a placed stop B between 14:05 and 14:51 UTC
+on 21 Nov. For each one it estimates the train's position one second before the report, so the estimator
+can't see it, and measures the distance along the journey's track paths from the estimate to B. Negative
+means the estimate is behind the train. Time error is the estimator's predicted arrival at B minus the
+report. This checks the estimator against our own data. It isn't ground truth: Darwin's actuals are to the
+minute and come from TD berth steps.
+
+```
+PYTHONPATH=src uv run docs/spikes/accuracy_check.py --start 2026-11-21T14:05:00+00:00 --end 2026-11-21T14:51:00+00:00
+```
+
+Run on `traintrack_test` after a clean replay of the day's recordings with the two fixes below, and with
+TIPLOC locations, the track model and segment paths reloaded. 17,234 reports were measured. Skipped: 1,729
+because B has no location, and 81 because the train had no position.
+
+| | n | median | p90 | p95 | signed median | time error median / \|p90\| |
+|---|---:|---:|---:|---:|---:|---:|
+| all | 17,234 | 34 m | 1,386 m | 1,922 m | −24 m | 0 s / 60 s |
+| high confidence | 15,418 | 34 m | 1,347 m | 1,837 m | −24 m | 0 s / 60 s |
+| medium | 1,508 | 31 m | 1,798 m | 2,569 m | −23 m | 0 s / 120 s |
+| low | 308 | 448 m | 3,061 m | 11,948 m | −143 m | 0 s / 180 s |
+| calls | 9,791 | 24 m | 1,233 m | 1,671 m | −24 m | 0 s / 120 s |
+| passes | 7,443 | 42 m | 1,617 m | 2,233 m | −24 m | 0 s / 60 s |
+
+By state: running 16,077 (median 38 m, p95 1,888 m); held 998 (median 0, p95 3,948 m); dwelling 122
+(median 980 m, mostly behind: no departure report yet when the train was already arriving at B).
+
+- The p90 of about 1.4 km matches the time error. Reports are to the minute, so a train doing 25 m/s can be a minute,
+  or 1.5 km, from where the timetable-plus-delay says. Confidence separates the tails as intended: low has a
+  p95 six times high's.
+- **Worst offenders now:** trains held short of a call that never reports. There were 75 held estimates more
+  than 1 km out, and 72 of those were held at a call with no report anywhere in the recording. Examples:
+  - Far North line request stops: 2H62 held at Kinbrace for 46 min while it was really reaching Brora, 44.6 km on.
+  - The Kyle line, the Cumbrian Coast, Gretna Green to Annan, Sleaford to Boston.
+  
+  Holding is the safe choice when a train might really be stopped, but where a call has no TD coverage it pins
+  the train until the next report.
+- 2O06 (Upminster to Richmond via Turnham Green): the BPLAN point for TRNHMGN is at Barking (lon 0.111).
+  The speed check misses it because the Upminster leg is 75 min long, so only one side looks
+  impossible. An override in `reference/tiploc_overrides.csv` would fix it. The check could also flag
+  one-sided jumps, at some risk of flagging good neighbours of a bad point.
+
+**Two data bugs found and fixed.** The first run, on `nationalrail` with the data as the consumer had stored
+it, gave the same median (34 m) and p90 (1,407 m) but a long tail of 25–70 km errors:
+- **Stale stops after the destination.** The timetable reload at 14:44 upserted on (rid, sequence) after
+  schedule messages and added passes had renumbered stops. 9J29 kept Gatwick, Three Bridges and Faygate after
+  its destination Horsham, and 1P24 had duplicate rows. Reloading now replaces a journey's stops and carries
+  live data over by TIPLOC and working times, as schedule messages do (fddb98d). Darwin-added passes are
+  dropped on reload and come back with the next TS for them.
+- **The only visit matched any report.** match_location returned a TIPLOC's single visit whatever the time.
+  On loops (2K35/2K37 round Kingston), the outbound pass at Queens Road Battersea (14:33) set the actual on the
+  15:39 return call, and the estimator put the train on the return leg. Of single-visit matches in the replay:
+  - 367 within 5 min
+  - 31 within 15 min
+  - 0 between 30 and 60 min
+  - 19 over an hour, all wrong-leg matches at QTRDBAT
+
+  The only visit now matches within 15 min. A pass further from every visit is stored as a Darwin-added pass
+  (f0b235a). The replay stays at 99.96% matched (147 unmatched), with 4,840 added passes (+8).
+
+**Test gaps found and filled:**
+- A reload after renumbering.
+- A report far from a TIPLOC's only visit (pass added, close call matched, far call unmatched).
+- The estimator on a journey that reverses and runs back through the same TIPLOC.
+
+The script's own reversal handling was wrong at first. It took the visit nearest B, which put 1R70 on the
+far side of Sheffield. It now takes the visit heading for the estimate's to_tiploc.
