@@ -208,3 +208,36 @@ it, gave the same median (34 m) and p90 (1,407 m) but a long tail of 25–70 km 
 
 The script's own reversal handling was wrong at first. It took the visit nearest B, which put 1R70 on the
 far side of Sheffield. It now takes the visit heading for the estimate's to_tiploc.
+
+### Loose ends fixed: unreported calls and Turnham Green
+
+**Holding a train at an unreported call.** A train due at a call that hasn't reported is now held there for
+at most 3 minutes after it was due. After that it runs on through the call on forecast or planned times
+(`HOLD_LIMIT` in `positions.py`). I considered a list of calls that never report, learned from the data, but
+it would need new state and would go stale. The time limit handles request stops and lines without train
+describer coverage without knowing which ones they are, and a train that is really stopped still shows as
+held for the first few minutes. Choosing the limit (same check, same window, `--hold-minutes`):
+
+| hold limit | median | p90 | p95 | low-confidence p95 | reports > 1 km out (trains) | held > 1 km out |
+|---|---:|---:|---:|---:|---:|---:|
+| none (before) | 34 m | 1,384 m | 1,919 m | 11,006 m | 2,843 (1,284) | 75 |
+| 10 min | 34 m | 1,378 m | 1,898 m | 2,954 m | 2,828 (1,274) | 58 |
+| 5 min | 34 m | 1,366 m | 1,867 m | 1,848 m | 2,804 (1,265) | 27 |
+| **3 min** | 34 m | 1,361 m | 1,855 m | 1,848 m | 2,791 (1,256) | 11 |
+
+A shorter limit would show a train running past a call before it really got there, which the check
+counts as a positive error at that call. 3 minutes still came out best on every measure. At 14:45, 2,247 of
+2,279 active trains (98.6%) are positioned, the same as before. Held trains fell from 134 to 96.
+
+**Turnham Green.** I added an override from NaPTAN's point for the Underground station (9400ZZLUTNG).
+The speed check missed the Barking point because trains reach Turnham Green from Upminster on a 75-minute
+leg, so only the Richmond side looked impossible. Reloading locations also left the old paths in place, so
+`add_tiploc_locations` now drops paths that touch a TIPLOC that moved, for `segment_paths.py` to route
+again. On `nationalrail`, the 4 TRNHMGN paths were rerouted. TRNHMGN to GNRSBRY is now 659 m of track,
+where it was 33 km.
+
+**Worst offenders now** (worst is 11 km, down from 44.6 km):
+- **Severn Tunnel:** 2U18 and 1F16 at Severn Tunnel Junction are estimated at Pilning, 11 km short.
+- **Twyford:** five trains at TWYFORD are 7.2 km ahead, predicted 2 minutes before the report, which looks like
+  late pass reports at that TIPLOC.
+- **Beccles to Oulton Broad South:** 2D80 is still "dwelling" at Beccles with no departure report.

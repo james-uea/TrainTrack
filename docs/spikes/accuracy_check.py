@@ -14,6 +14,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from itertools import pairwise
 
+import positions
 from config import load_config
 from db import Database
 from positions import (
@@ -51,7 +52,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--start", type=datetime.fromisoformat, required=True)
     parser.add_argument("--end", type=datetime.fromisoformat, required=True)
+    parser.add_argument("--hold-minutes", type=float, help="override positions.HOLD_LIMIT, to compare settings")
     args = parser.parse_args()
+    if args.hold_minutes is not None:
+        positions.HOLD_LIMIT = timedelta(minutes=args.hold_minutes)
 
     db = Database(load_config().database_url)
     paths = PathCache(db.fetch_segment_paths())
@@ -114,6 +118,8 @@ def main():
         summary(f"state {state}", [r for r in results if r[6].state == state])
 
     held_far = sum(1 for r in results if r[6].state == "held" and abs(r[0]) > 1000)
+    print(f"over 1 km out: {sum(1 for r in results if abs(r[0]) > 1000)}"
+          f" ({len({r[4].rid for r in results if abs(r[0]) > 1000})} trains)")
     print(f"held over 1 km out: {held_far}, of which at a call with no report all day: {held_at_silent}")
 
     print("\nWorst 15:")
