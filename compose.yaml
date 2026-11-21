@@ -1,6 +1,8 @@
 services:
   db:
-    image: postgres
+    # Postgres 18 with PostGIS (docker/db/Dockerfile)
+    build: docker/db
+    image: traintrack-db
     restart: unless-stopped
     shm_size: 128mb
 
