@@ -1,5 +1,3 @@
-Obsidian vault for this project is located @ /Users/james/Documents/ObsidianVault/Projects/Conductor
-
 ## Memory
 `.memory/` holds what past runs measured or learned that neither the code nor the docs record: stats, environment gotchas, feed quirks, reusable diagnostic scripts. It's excluded from git through `.git/info/exclude`.
 - Read `.memory/MEMORY.md` at the start of a run.
