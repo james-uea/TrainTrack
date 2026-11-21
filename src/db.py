@@ -255,7 +255,11 @@ class Database:
         )
 
     def add_tiploc_locations(self, locations: list):
-        """Replace TIPLOC coordinates (from tiploc_locations.py), leaving rows whose values haven't changed alone."""
+        """
+        Replace TIPLOC coordinates (from tiploc_locations.py), leaving rows whose values haven't changed alone.
+        Segment paths to or from a TIPLOC that moved or went are dropped, for segment_paths.py to route again.
+        """
+        self.cur.execute("CREATE TEMP TABLE old_points ON COMMIT DROP AS SELECT tiploc, geom FROM tiploc_locations")
         self.cur.executemany("""
             INSERT INTO tiploc_locations (tiploc, name, geom, easting, northing, source, quality)
             VALUES (%s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326), %s, %s, %s, %s)
@@ -271,7 +275,16 @@ class Database:
             location.source, location.quality,
         ) for location in locations])
         # A TIPLOC no source has any more (e.g. a removed override with no other point) loses its row
-        self.cur.execute("DELETE FROM tiploc_locations WHERE NOT (tiploc = ANY(%s))", ([location.tiploc for location in locations],))
+        tiplocs = [location.tiploc for location in locations]
+        self.cur.execute("DELETE FROM tiploc_locations WHERE NOT (tiploc = ANY(%s))", (tiplocs,))
+        self.cur.execute("""
+            WITH moved AS (
+                SELECT o.tiploc FROM old_points o LEFT JOIN tiploc_locations t USING (tiploc)
+                WHERE t.geom IS NULL OR NOT ST_Equals(t.geom, o.geom)
+            )
+            DELETE FROM segment_paths
+            WHERE from_tiploc IN (SELECT tiploc FROM moved) OR to_tiploc IN (SELECT tiploc FROM moved)
+        """)
         self.conn.commit()
 
     # Timetable (bulk, from initialise.py)

@@ -142,6 +142,17 @@ def test_segment_paths_for_a_days_timetable(db):
 
     assert update(db, date(2026, 11, 21)) == {"track": 1, "off_network": 1}
     assert update(db, date(2026, 11, 21)) == {}  # only new pairs are routed
+    # Reloading the same points keeps the paths; moving one drops the paths that touch it, to be routed again
+    db.add_tiploc_locations([
+        located("AAA", 100, 6, "naptan"), located("BBB", 1300, -2, "naptan"), located("FAR", 1500, 900, "naptan"),
+    ])
+    db.snap_tiploc_locations()
+    assert update(db, date(2026, 11, 21)) == {}
+    db.add_tiploc_locations([
+        located("AAA", 100, 6, "naptan"), located("BBB", 1300, -2, "naptan"), located("FAR", 1600, 900, "naptan"),
+    ])
+    db.snap_tiploc_locations()
+    assert update(db, date(2026, 11, 21)) == {"off_network": 1}
 
     db.cur.execute("""
         SELECT from_tiploc, to_tiploc, method, fallback_reason, round(length_m), ST_SRID(geom)
@@ -150,7 +161,7 @@ def test_segment_paths_for_a_days_timetable(db):
     # AAA is nearest the down line and BBB the up line; the route stays on one of them
     assert db.cur.fetchall() == [
         ("AAA", "BBB", "track", None, 1200, 4326),
-        ("BBB", "FAR", "straight", "off_network", 924, 4326),
+        ("BBB", "FAR", "straight", "off_network", 951, 4326),
     ]
 
 
