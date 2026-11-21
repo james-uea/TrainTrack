@@ -26,6 +26,9 @@ USABLE_LOCATION = "COALESCE(t.quality IN ('good', 'off_network'), FALSE)"
 # How far Darwin's working time for a location may be from the planned one when a train calls or passes
 # somewhere more than once and the times don't match exactly
 MATCH_TOLERANCE = timedelta(minutes=5)
+# A TIPLOC the train visits once still matches a report this far from the planned time. Further out the
+# report is of a visit the schedule doesn't have (on 21 Nov all 19 gaps over an hour were wrong-leg matches)
+SINGLE_VISIT_TOLERANCE = timedelta(minutes=15)
 
 # Live data a stop keeps when its journey's stops are replaced by a newer schedule
 LIVE_COLUMNS = (
@@ -118,7 +121,9 @@ def match_location(location: Location, stops: list[StopRow]) -> StopRow | None:
         return partial[0]
 
     if len(at_tiploc) == 1:
-        return at_tiploc[0]
+        if parse_time(location.working_time()) is None:
+            return at_tiploc[0]
+        return nearest_stop(location, at_tiploc, SINGLE_VISIT_TOLERANCE)
 
     # The train is here more than once and Darwin's working time differs a little from every call:
     # take the closest within tolerance
@@ -135,22 +140,35 @@ def time_of_day_gap(at: time, planned: datetime) -> timedelta:
     return timedelta(seconds=min(seconds, 86400 - seconds))
 
 
-def nearest_stop(location: Location, stops: list[StopRow]) -> StopRow | None:
-    """The stop whose working time is nearest the location's, if within MATCH_TOLERANCE and not tied."""
+def visit_gaps(location: Location, stops: list[StopRow]) -> list[tuple[timedelta, StopRow]]:
+    """How far each stop's working time is from the location's, nearest first (empty if Darwin sent none)."""
     at = parse_time(location.working_time())
     if at is None:
-        return None
-
+        return []
     gaps = []
     for stop in stops:
         planned = (stop.working_pass if location.is_pass() else None) or stop.any_working()
         if planned is not None:
             gaps.append((time_of_day_gap(at, planned), stop))
-    gaps = sorted((gap for gap in gaps if gap[0] <= MATCH_TOLERANCE), key=lambda gap: gap[0])
+    return sorted(gaps, key=lambda gap: gap[0])
+
+
+def nearest_stop(location: Location, stops: list[StopRow], tolerance: timedelta = MATCH_TOLERANCE) -> StopRow | None:
+    """The stop whose working time is nearest the location's, if within tolerance and not tied."""
+    gaps = [gap for gap in visit_gaps(location, stops) if gap[0] <= tolerance]
 
     if not gaps or (len(gaps) > 1 and gaps[0][0] == gaps[1][0]):
         return None
     return gaps[0][1]
+
+
+def is_unscheduled_visit(location: Location, stops: list[StopRow]) -> bool:
+    """True if no stop at the location's TIPLOC is within SINGLE_VISIT_TOLERANCE of its working time."""
+    at_tiploc = [stop for stop in stops if stop.tiploc == location.tiploc]
+    if not at_tiploc:
+        return True
+    gaps = visit_gaps(location, at_tiploc)
+    return bool(gaps) and gaps[0][0] > SINGLE_VISIT_TOLERANCE and match_location(location, at_tiploc) is None
 
 
 def added_pass_position(location: Location, stops: list[StopRow]) -> tuple[int, datetime] | None:
@@ -411,9 +429,11 @@ class Database:
             return None
 
         result = StatusResult()
-        # Passing points missing from the schedule become stops first, so sequences are settled before matching
+        # Passing points missing from the schedule become stops first, so sequences are settled before matching.
+        # That includes a pass at a TIPLOC the schedule visits only at some quite different time (the other leg of
+        # a loop); one between two nearby visits stays unmatched rather than becoming a third
         for location in status.locations:
-            if (location.is_pass() and not any(stop.tiploc == location.tiploc for stop in stops)
+            if (location.is_pass() and is_unscheduled_visit(location, stops)
                     and self.add_passing_point(status.rid, location, stops)):
                 result.added += 1
                 stops = self.fetch_stop_rows(status.rid)

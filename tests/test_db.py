@@ -171,6 +171,44 @@ def test_pass_time_too_far_from_either_visit_is_unmatched(db):
     assert loop_stops(db, "actual_pass") == [(None,)] * 5
 
 
+# Out to QQQ and back, but the schedule lists only the return call there (as Darwin did for 2K37 at Queens Road)
+THERE_AND_BACK = {
+    "rid": "202611218000003", "uid": "W00003", "trainId": "2L03", "ssd": "2026-11-21", "toc": "ME",
+    "OR": {"tpl": "AAA", "wtd": "10:00"},
+    "IP": [{"tpl": "BBB", "wta": "10:20", "wtd": "10:21"}, {"tpl": "QQQ", "wta": "10:40", "wtd": "10:41"}],
+    "DT": {"tpl": "ZZZ", "wta": "10:50"},
+}
+
+
+def there_and_back(db, *columns):
+    db.cur.execute(f"SELECT {', '.join(columns)} FROM train_stops WHERE rid = %s ORDER BY sequence",
+                   (THERE_AND_BACK["rid"],))
+    return db.cur.fetchall()
+
+
+def test_a_visit_far_from_the_only_scheduled_one_is_not_matched_to_it(db):
+    db.add_schedules([parse_schedule(THERE_AND_BACK)])
+    rid = THERE_AND_BACK["rid"]
+
+    # The outbound pass, 30 minutes before the return call: stored as a pass of its own
+    counts = db.handle_message(status({"tpl": "QQQ", "wtp": "10:10", "pass": {"at": "10:11"}}, rid=rid))
+    assert (counts["unmatched_locations"], counts["added_locations"]) == (0, 1)
+    # A call 12 minutes out from the only one at BBB is still that call
+    counts = db.handle_message(status({"tpl": "BBB", "wta": "10:32", "arr": {"at": "10:33"}}, rid=rid))
+    assert counts["unmatched_locations"] == 0
+    # A call an hour out isn't, and calls are never added
+    counts = db.handle_message(status({"tpl": "ZZZ", "wta": "11:50", "arr": {"at": "11:51"}}, rid=rid))
+    assert (counts["unmatched_locations"], counts["added_locations"]) == (1, 0)
+
+    assert there_and_back(db, "tiploc", "added_from_status", "actual_pass", "actual_arrival") == [
+        ("AAA", False, None, None),
+        ("QQQ", True, london(2026, 11, 21, 10, 11), None),
+        ("BBB", False, None, london(2026, 11, 21, 10, 33)),
+        ("QQQ", False, None, None),
+        ("ZZZ", False, None, None),
+    ]
+
+
 def test_pass_missing_from_the_schedule_is_stored_in_order(db):
     db.add_schedules([parse_schedule(LOOP)])
     db.handle_message(status({"tpl": "AAA", "wtd": "10:00", "dep": {"at": "10:01"}}, rid=LOOP_RID))
