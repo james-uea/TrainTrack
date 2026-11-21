@@ -40,6 +40,10 @@ OLD_REPORT = timedelta(minutes=15)
 # needs no list of which calls report, which would go stale. On the 21 Nov replay 3 minutes gave fewer estimates
 # over 1 km out than 5, 10 or no limit (docs/spikes/milestone2-data-spike.md)
 HOLD_LIMIT = timedelta(minutes=3)
+# ...and only if it was at least this late at its last report (minutes; None holds any train). An on-time train
+# that doesn't report at a call has most likely gone through a call that never reports. On the 21 Nov 14:05-14:51
+# check, 3 cut held estimates over 1 km out from 13 to 2 and p95 error from 1,964 to 1,962 m; 5 was no better
+HOLD_MIN_DELAY: int | None = 3
 # How far ahead along the path to look for the bearing (metres)
 BEARING_LOOKAHEAD = 25.0
 
@@ -244,7 +248,8 @@ def estimate_position(journey: Journey, at: datetime, paths: PathSource) -> Posi
         there = placed[k + 1]
         due = timeline.arrival(there)
         if due is not None and at >= due:
-            if (there == limit and at < due + HOLD_LIMIT
+            late_enough = HOLD_MIN_DELAY is None or (delay is not None and delay >= HOLD_MIN_DELAY)
+            if (there == limit and at < due + HOLD_LIMIT and late_enough
                     and not timeline._seen(stops[there].actual_arrival or stops[there].actual_pass)):
                 return _running(stops, here, there, 1.0, "held", paths, confidence, delay, age, leaves or arrived, due)
             continue

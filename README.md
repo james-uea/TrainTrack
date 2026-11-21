@@ -1,8 +1,8 @@
 # TrainTrack
 
-TrainTrack uses NationalRail's Darwin Feed for tracking UK trains live
+TrainTrack uses NationalRail's Darwin Feed for tracking UK trains live, and draws every train on a map, moving along the real track.
 
-Journeys, Stops & Updates are all stored in Postgres.
+Journeys, Stops & Updates are all stored in Postgres with PostGIS, alongside Network Rail's Track Model and a location for every TIPLOC.
 
 ```mermaid
 ---
@@ -19,7 +19,9 @@ flowchart LR
     DATA -- "initialise.py" --> DB[("Postgres")]
     PP["Darwin Push Port"] -- "consumer.py" --> EV[("Event log")]
     EV --> DB
+    TM["Track Model, NaPTAN, BPLAN"] -- "track_model.py, tiploc_locations.py, segment_paths.py" --> DB
     DB --> TUI["Terminal UI"]
+    DB -- "api.py" --> MAP["Live map (web/)"]
 ```
 
 ## Requirements
@@ -29,7 +31,11 @@ flowchart LR
   - [Darwin Timetable Files](https://raildata.org.uk/dashboard/dataProduct/P-9ca6bc7e-62e1-44d6-b93a-1616f7d2caf8/overview)
 - An FTP server that RailData can deliver the timetable files to
 - Python 3.12+ and [uv](https://docs.astral.sh/uv/)
-- Docker (for Postgres)
+- Docker (for Postgres with PostGIS)
+- For the map: Node 22+ and [pnpm](https://pnpm.io/), and these files in `data/`:
+  - Network Rail's Track Model (`data/trackmodel/NWR_TrackModel*.zip`)
+  - NaPTAN stops (`data/naptan/Stops.csv`)
+  - Network Rail BPLAN (`data/bplan/PIF*.txt.gz`)
 
 ## Setup
 
@@ -40,6 +46,8 @@ flowchart LR
 1) Copy `.env.example` to `.env` and set the values to the ones RailData provides
 1) Run `docker compose up -d` to launch Postgres and Adminer
 1) Apply database migrations (`uv run src/migrate.py`)
+1) For the map, load the track and locations once (and again when the files change):
+   `uv run src/track_model.py`, `uv run src/tiploc_locations.py`, then `uv run src/segment_paths.py` (the timetable loader also routes each new day's stop pairs)
 
 ### Running everything in Docker
 
@@ -47,6 +55,7 @@ flowchart LR
 
 - `consumer` applies migrations, then consumes the Push Port continuously (restarts if it crashes)
 - `timetable` loads the timetable from `data/` on start, then again every day at 05:00 UK time
+- `api` serves live positions and the map on http://localhost:8000 (`MAP_CLOCK` in `.env` can replay a past moment)
 
 ## Usage
 - `uv run src/migrate.py`: Apply all pending database migrations from `sql/`
@@ -56,11 +65,22 @@ flowchart LR
 - `uv run src/initialise.py --daily 05:00`: Load the timetable now, then again every day at that time
 - `uv run pytest`: Run the tests. Database tests need `TEST_DATABASE_URL` pointing at a database that can be wiped
 - `uv run src/search.py`: Run the train data viewer (CLI)
+- `uv run src/api.py`: Serve the API and the built map on http://localhost:8000
+  - `--clock now` (default), `fixed:2026-11-21T14:30Z` (frozen at that moment) or `replay:2026-11-21T14:30Z` (runs forward from it)
+  - Routes: `/api/positions` (`?at=` for any moment), `/api/stream` (server-sent deltas), `/api/trains/{rid}`, `/api/segments`, `/api/stations`, `/api/operators`, `/api/health`, and `/tiles/track/{z}/{x}/{y}.pbf`
+- `uv run src/track_model.py`, `uv run src/tiploc_locations.py`, `uv run src/segment_paths.py`: Load the track, place every TIPLOC (hand fixes in `reference/tiploc_overrides.csv`), and route each pair of consecutive stops along the track
+
+### The map (`web/`)
+- `pnpm install`, then `pnpm dev` serves the map on http://localhost:5173, calling the API on port 8000 (`TRAINTRACK_API` changes that)
+- `pnpm build` builds it into `web/dist`, which `api.py` serves
+- Open `?at=2026-11-21T14:30Z` to replay a past moment, `?train=<rid>` to open a train; press `/` to search
+- `pnpm test` (unit), `pnpm test:e2e` (Playwright smoke test against its own API on a replay clock; needs Chrome and that day's data), `pnpm lint`, `pnpm bench` (frame timings in headless Chrome)
+- `pnpm gen:api` regenerates the API types after changing `api.py`
 
 ## Planned work
 
 - [x] Add a way to query a train's latest reported location (`train_journeys.last_tiploc`, `last_reported_at`, `delay_minutes`)
-- [ ] A live web map of every train, with replay of past days
+- [x] A live web map of every train, with replay of past days
 - [ ] A terminal ui for initial setup and configuration
 
 ## Not currently planned

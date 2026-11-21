@@ -2,3 +2,10 @@ tiploc,lat,lon,note
 CNNBELL,51.548732,-0.092191,Canonbury East London line platforms; NaPTAN point for CNNB (BPLAN has 0 0)
 HIGHBYE,51.546087,-0.103767,Highbury & Islington East London line platforms; NaPTAN point for HIGHBYA (BPLAN has 0 0)
 TRNHMGN,51.495148,-0.254555,Turnham Green; NaPTAN point for the Underground station 9400ZZLUTNG (BPLAN puts it at Barking)
+LEEDSWJ,53.792158,-1.560284,Leeds West Jn; working times interpolated along the routed paths between neighbours then snapped to the nearest track junction (BPLAN has no point)
+PRTOBJP,51.518806,-0.185438,Portobello Jn near Paddington; working times interpolated along routed paths then snapped to the nearest track junction
+GLGCBSJ,55.850662,-4.260318,Glasgow Central Bridge St Jn; working times interpolated along routed paths then snapped to the nearest track junction
+SURRQSJ,51.490859,-0.046216,Surrey Quays Jn; working times interpolated along routed paths then snapped to the nearest track junction
+WATRLWC,51.500968,-0.114673,Waterloo West Crossings; the four-way track junction at the platform throat 282 m along the Waterloo to Vauxhall path (time interpolation lands at Nine Elms)
+SEVTNLE,51.564494,-2.652730,Severn Tunnel east portal; 0.18 of the way Pilning to Severn Tunnel Jn by median working time over 122 trains (BPLAN puts it at Severn Tunnel Jn)
+SEVTNLW,51.585244,-2.746460,Severn Tunnel west portal; 0.82 of the way Pilning to Severn Tunnel Jn by median working time over 122 trains (BPLAN puts it 2 km east of Severn Tunnel Jn)

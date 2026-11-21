@@ -25,10 +25,18 @@ Milestone 3: the live map.
 - The legend's delay bands are switches that hide or show those trains, and "Late trains only" hides trains that are on time or haven't reported
 - `?bench=1` on the map measures 60 s of frames and React renders; `pnpm bench` runs it in headless Chrome, with `--throttle 4` to slow the CPU and `?renderer=geojson` to compare deck.gl with a MapLibre GeoJSON source
 - Dependencies: `fastapi`, `uvicorn[standard]`; `httpx2` for tests. Front end: React, MapLibre GL (`react-map-gl`), deck.gl (with `@deck.gl/extensions`), TanStack Query, Zustand, `openapi-fetch`, `cmdk`, `cheap-ruler`; Vite, TypeScript 6, Vitest, Biome, `openapi-typescript`, Playwright
+- `pnpm test:e2e`: a Playwright smoke test that starts its own API on a replay clock and Vite, waits for trains to be placed and the clock to move, finds a train with search and opens its panel, and fails on any console error
+- The map page has a favicon
 
 ### Changed
+- A train is held short of a call that hasn't reported only if it's at least 3 minutes late (`positions.HOLD_MIN_DELAY`); an on-time train runs on through, since it has most likely called and the report is late. Held trains more than 1 km from where they turned out to be fell from 13 to 2 on 21 Nov 14:05–14:51
+- `accuracy_check.py --hold-min-delay` compares settings
+- The README covers PostGIS, the Track Model and locations, the API and the map
 - Positions carry `left` and `due`: when the train left the stop it's coming from and is expected at the next, so a client can work out its progress itself
 - Every applied train status update now sets `train_journeys.updated_at`, not only one with a new actual time, so forecast changes can be picked up
+
+### Fixed
+- Seven junctions and tunnel ends now have overrides in `reference/tiploc_overrides.csv`: Leeds West Jn, Portobello Jn (Paddington), Glasgow Central Bridge St Jn, Surrey Quays Jn and Waterloo West Crossings had no usable BPLAN point, and BPLAN put both Severn Tunnel portals near Severn Tunnel Junction, so trains between Pilning and the tunnel zigzagged and were drawn up to 11 km short
 
 ## 0.6.0
 Milestone 2: train positions on the real track.
