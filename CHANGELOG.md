@@ -5,8 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
-
 ## 0.6.0
 Milestone 2: train positions on the real track.
 
@@ -17,7 +15,7 @@ Milestone 2: train positions on the real track.
 - `track_links` (migration `005`): Network Rail Track Model centrelines, loaded by `track_model.py`, with a routable graph of the track (`track_graph.py`)
 - TIPLOC locations are snapped to the track and graded `good`, `off_network` or `suspect` (migration `006`). BPLAN points that trains would have to reach impossibly fast are marked `suspect`
 - `segment_paths` (migration `007`): a path along the track for each pair of consecutive stops in the day's timetable, or a straight line when there isn't a sensible one. `initialise.py` routes new pairs after each timetable load
-- `positions.py`: where each running train is at a given moment (now or a replayed time), along its track path. Gives a state (`running`, `dwelling`, `held`, `not_started`, `terminated`), bearing, delay and confidence, with optional GeoJSON output
+- `positions.py`: where each running train is at a given moment (now or a replayed time), along its track path. Gives a state (`running`, `dwelling`, `held`, `not_started`, `terminated`), bearing, delay and confidence, with optional GeoJSON output. A train due at a call that hasn't reported is held there for up to 3 minutes
 - `docs/spikes/accuracy_check.py`: measures the position estimator against the actual reports in the database
 - Dependencies: `networkx`, `pyproj`, `pyshp`, `shapely`
 
@@ -31,6 +29,7 @@ Milestone 2: train positions on the real track.
 - Reloading the timetable after schedule messages had renumbered a journey's stops left stale stops after its destination
 - A report at a TIPLOC visited once was matched to that visit whatever its time (e.g. the outbound pass on a loop landed on the return call)
 - Turnham Green was placed at Barking (BPLAN); it now uses NaPTAN's point
+- BPLAN has no usable point for the East London line platforms at Highbury & Islington and Canonbury; they now have overrides
 
 ## 0.5.0
 ### Added
