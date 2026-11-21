@@ -34,6 +34,11 @@ STALE_REPORT = timedelta(minutes=60)
 # Report ages for confidence
 FRESH_REPORT = timedelta(minutes=10)
 OLD_REPORT = timedelta(minutes=15)
+# A train due at a call that hasn't reported is held there for this long, then assumed to have gone through it
+# unreported: many calls (request stops, lines without train describer coverage) never report. A time limit
+# needs no list of which calls report, which would go stale. On the 21 Nov replay 3 minutes gave fewer estimates
+# over 1 km out than 5, 10 or no limit (docs/spikes/milestone2-data-spike.md)
+HOLD_LIMIT = timedelta(minutes=3)
 # How far ahead along the path to look for the bearing (metres)
 BEARING_LOOKAHEAD = 25.0
 
@@ -194,8 +199,8 @@ def estimate_position(journey: Journey, at: datetime, paths: PathSource) -> Posi
 
     age = timeline.report_age()
     delay = round(timeline.delay.total_seconds() / 60) if timeline.reported is not None else None
-    # The train isn't shown past the next placed call after its latest report until it reports there. Passing
-    # points don't hold it: Darwin has no actual times for many of them
+    # The train isn't shown past the next placed call after its latest report until it reports there, or until
+    # HOLD_LIMIT after it was due. Passing points don't hold it: Darwin has no actual times for many of them
     limit = next((index for index in placed
                   if timeline.reported is not None and index > timeline.reported and stops[index].is_call), None)
 
@@ -236,7 +241,8 @@ def estimate_position(journey: Journey, at: datetime, paths: PathSource) -> Posi
         there = placed[k + 1]
         due = timeline.arrival(there)
         if due is not None and at >= due:
-            if there == limit and not timeline._seen(stops[there].actual_arrival or stops[there].actual_pass):
+            if (there == limit and at < due + HOLD_LIMIT
+                    and not timeline._seen(stops[there].actual_arrival or stops[there].actual_pass)):
                 return _running(stops, here, there, 1.0, "held", paths, confidence, delay, age)
             continue
 
