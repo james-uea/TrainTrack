@@ -13,6 +13,13 @@ from util import LONDON, nearest_datetime, parse_date, parse_time, resolve_seque
 
 logger = logging.getLogger(__name__)
 
+# Stops where a train calls (the rest are passing points)
+CALL_TYPES = "('OR', 'IP', 'DT', 'OPOR', 'OPIP', 'OPDT')"
+
+# A tiploc_locations row `t` that can place a stop on the map. off_network points (stations away from
+# Network Rail track) are placed but joined with straight lines; suspect points aren't used
+USABLE_LOCATION = "COALESCE(t.quality IN ('good', 'off_network'), FALSE)"
+
 # How far Darwin's working time for a location may be from the planned one when a train calls or passes
 # somewhere more than once and the times don't match exactly
 MATCH_TOLERANCE = timedelta(minutes=5)
@@ -516,6 +523,52 @@ class Database:
             LIMIT %s
         """, (count,))
         return [JourneySummary(*row) for row in self.cur.fetchall()]
+
+    # Coverage (coverage_report.py): which stops can be placed on the map
+
+    def fetch_coverage(self, day) -> dict[str, tuple[int, int]]:
+        """(placed, total) for the stops of trains scheduled on `day`, by kind of stop."""
+        self.cur.execute(f"""
+            WITH stops AS (
+                SELECT s.rid, s.sequence, s.location_type, ({USABLE_LOCATION}) AS placed,
+                    s.location_type IN {CALL_TYPES} AS is_call
+                FROM train_stops s
+                JOIN train_journeys j ON j.rid = s.rid
+                LEFT JOIN tiploc_locations t ON t.tiploc = s.tiploc
+                WHERE j.scheduled_start = %(day)s
+            ), segments AS (
+                SELECT placed AND LEAD(placed) OVER (PARTITION BY rid ORDER BY sequence) AS placed,
+                    LEAD(rid) OVER (PARTITION BY rid ORDER BY sequence) IS NOT NULL AS has_next
+                FROM stops WHERE is_call
+            )
+            SELECT 'passenger calls', count(*) FILTER (WHERE placed), count(*) FROM stops WHERE location_type IN ('OR', 'IP', 'DT')
+            UNION ALL SELECT 'all calls', count(*) FILTER (WHERE placed), count(*) FROM stops WHERE is_call
+            UNION ALL SELECT 'passing points', count(*) FILTER (WHERE placed), count(*) FROM stops WHERE location_type = 'PP'
+            UNION ALL SELECT 'all stops', count(*) FILTER (WHERE placed), count(*) FROM stops
+            UNION ALL SELECT 'call-to-call segments', count(*) FILTER (WHERE placed), count(*) FROM segments WHERE has_next
+        """, {"day": day})
+        return {row[0]: (row[1], row[2]) for row in self.cur.fetchall()}
+
+    def fetch_unplaced_tiplocs(self, day, limit: int) -> list[tuple]:
+        """
+        TIPLOCs that trains scheduled on `day` use but that can't be placed, busiest first:
+        (tiploc, name, reason, trains calling, trains passing).
+        """
+        self.cur.execute(f"""
+            SELECT s.tiploc, l.location_name,
+                CASE WHEN t.tiploc IS NULL THEN 'missing' ELSE t.quality END,
+                count(DISTINCT s.rid) FILTER (WHERE s.location_type IN {CALL_TYPES}),
+                count(DISTINCT s.rid) FILTER (WHERE s.location_type NOT IN {CALL_TYPES})
+            FROM train_stops s
+            JOIN train_journeys j ON j.rid = s.rid
+            LEFT JOIN tiploc_locations t ON t.tiploc = s.tiploc
+            LEFT JOIN locations l ON l.tiploc = s.tiploc
+            WHERE j.scheduled_start = %s AND NOT ({USABLE_LOCATION})
+            GROUP BY 1, 2, 3
+            ORDER BY count(DISTINCT s.rid) DESC, 1
+            LIMIT %s
+        """, (day, limit))
+        return self.cur.fetchall()
 
     def close(self):
         self.cur.close()
