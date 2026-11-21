@@ -1,0 +1,836 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "TrainTrack",
+    "version": "0.6.0"
+  },
+  "paths": {
+    "/api/positions": {
+      "get": {
+        "summary": "Positions",
+        "description": "Every placed train at the latest tick.",
+        "operationId": "positions_api_positions_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PositionsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/trains/{rid}": {
+      "get": {
+        "summary": "Train",
+        "description": "One train's stops, times, route and position.",
+        "operationId": "train_api_trains__rid__get",
+        "parameters": [
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Rid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrainDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/stream": {
+      "get": {
+        "summary": "Stream",
+        "description": "Positions as server-sent events, one per tick. A `snapshot` event holds every train (as /api/positions);\na `changes` event holds only new and changed trains and the rids removed. Pass the version you already have\nas `since` (or let the browser send Last-Event-ID on reconnect) to start with changes instead of a snapshot.",
+        "operationId": "stream_api_stream_get",
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Since"
+            }
+          },
+          {
+            "name": "last-event-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Last-Event-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "text/event-stream": {
+                "itemSchema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "string"
+                    },
+                    "event": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "retry": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/health": {
+      "get": {
+        "summary": "Health",
+        "operationId": "health_api_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "Health": {
+        "properties": {
+          "clock": {
+            "type": "string",
+            "title": "Clock"
+          },
+          "at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "At"
+          },
+          "tick_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tick Ms"
+          },
+          "trains_loaded": {
+            "type": "integer",
+            "title": "Trains Loaded"
+          },
+          "active": {
+            "type": "integer",
+            "title": "Active"
+          },
+          "placed": {
+            "type": "integer",
+            "title": "Placed"
+          },
+          "last_write": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Write"
+          }
+        },
+        "type": "object",
+        "required": [
+          "clock",
+          "at",
+          "tick_ms",
+          "trains_loaded",
+          "active",
+          "placed",
+          "last_write"
+        ],
+        "title": "Health"
+      },
+      "PositionsResponse": {
+        "properties": {
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "At"
+          },
+          "clock": {
+            "type": "string",
+            "title": "Clock"
+          },
+          "active": {
+            "type": "integer",
+            "title": "Active"
+          },
+          "trains": {
+            "items": {
+              "$ref": "#/components/schemas/TrainPosition"
+            },
+            "type": "array",
+            "title": "Trains"
+          }
+        },
+        "type": "object",
+        "required": [
+          "version",
+          "at",
+          "clock",
+          "active",
+          "trains"
+        ],
+        "title": "PositionsResponse"
+      },
+      "TrainDetail": {
+        "properties": {
+          "rid": {
+            "type": "string",
+            "title": "Rid"
+          },
+          "headcode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Headcode"
+          },
+          "toc": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Toc"
+          },
+          "operator": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operator"
+          },
+          "cancelled": {
+            "type": "boolean",
+            "title": "Cancelled"
+          },
+          "cancel_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cancel Reason"
+          },
+          "late_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Late Reason"
+          },
+          "delay": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delay"
+          },
+          "origin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin"
+          },
+          "destination": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Destination"
+          },
+          "stops": {
+            "items": {
+              "$ref": "#/components/schemas/TrainStop"
+            },
+            "type": "array",
+            "title": "Stops"
+          },
+          "route": {
+            "items": {
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array",
+              "maxItems": 2,
+              "minItems": 2
+            },
+            "type": "array",
+            "title": "Route"
+          },
+          "position": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TrainPosition"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "rid",
+          "headcode",
+          "toc",
+          "operator",
+          "cancelled",
+          "cancel_reason",
+          "late_reason",
+          "delay",
+          "origin",
+          "destination",
+          "stops",
+          "route",
+          "position"
+        ],
+        "title": "TrainDetail"
+      },
+      "TrainPosition": {
+        "properties": {
+          "rid": {
+            "title": "Rid",
+            "type": "string"
+          },
+          "headcode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Headcode"
+          },
+          "toc": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Toc"
+          },
+          "lat": {
+            "title": "Lat",
+            "type": "number"
+          },
+          "lon": {
+            "title": "Lon",
+            "type": "number"
+          },
+          "bearing": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bearing"
+          },
+          "state": {
+            "enum": [
+              "not_started",
+              "dwelling",
+              "running",
+              "held",
+              "terminated"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "confidence": {
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ],
+            "title": "Confidence",
+            "type": "string"
+          },
+          "delay": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delay"
+          },
+          "from_tiploc": {
+            "title": "From Tiploc",
+            "type": "string"
+          },
+          "to_tiploc": {
+            "title": "To Tiploc",
+            "type": "string"
+          },
+          "fraction": {
+            "title": "Fraction",
+            "type": "number"
+          },
+          "left": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Left"
+          },
+          "due": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due"
+          }
+        },
+        "required": [
+          "rid",
+          "headcode",
+          "toc",
+          "lat",
+          "lon",
+          "bearing",
+          "state",
+          "confidence",
+          "delay",
+          "from_tiploc",
+          "to_tiploc",
+          "fraction",
+          "left",
+          "due"
+        ],
+        "title": "TrainPosition",
+        "type": "object"
+      },
+      "TrainStop": {
+        "properties": {
+          "tiploc": {
+            "type": "string",
+            "title": "Tiploc"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "crs": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Crs"
+          },
+          "is_call": {
+            "type": "boolean",
+            "title": "Is Call"
+          },
+          "planned_arrival": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Planned Arrival"
+          },
+          "planned_departure": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Planned Departure"
+          },
+          "planned_pass": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Planned Pass"
+          },
+          "forecast_arrival": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Forecast Arrival"
+          },
+          "forecast_departure": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Forecast Departure"
+          },
+          "forecast_pass": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Forecast Pass"
+          },
+          "actual_arrival": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actual Arrival"
+          },
+          "actual_departure": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actual Departure"
+          },
+          "actual_pass": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actual Pass"
+          },
+          "platform": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform"
+          },
+          "platform_confirmed": {
+            "type": "boolean",
+            "title": "Platform Confirmed"
+          },
+          "cancelled": {
+            "type": "boolean",
+            "title": "Cancelled"
+          }
+        },
+        "type": "object",
+        "required": [
+          "tiploc",
+          "name",
+          "crs",
+          "is_call",
+          "planned_arrival",
+          "planned_departure",
+          "planned_pass",
+          "forecast_arrival",
+          "forecast_departure",
+          "forecast_pass",
+          "actual_arrival",
+          "actual_departure",
+          "actual_pass",
+          "platform",
+          "platform_confirmed",
+          "cancelled"
+        ],
+        "title": "TrainStop"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "PositionChanges": {
+        "description": "What changed in one tick. Trains not listed are unchanged: a client moves them on with `left` and `due`.",
+        "properties": {
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          },
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "clock": {
+            "title": "Clock",
+            "type": "string"
+          },
+          "active": {
+            "title": "Active",
+            "type": "integer"
+          },
+          "trains": {
+            "items": {
+              "$ref": "#/components/schemas/TrainPosition"
+            },
+            "title": "Trains",
+            "type": "array"
+          },
+          "removed": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Removed",
+            "type": "array"
+          }
+        },
+        "required": [
+          "version",
+          "at",
+          "clock",
+          "active",
+          "trains",
+          "removed"
+        ],
+        "title": "PositionChanges",
+        "type": "object"
+      }
+    }
+  }
+}

@@ -11,15 +11,19 @@ import asyncio
 import json
 import logging
 import threading
+import tomllib
 from collections.abc import AsyncIterable
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime
+from pathlib import Path
 from typing import Literal
 
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Response
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.openapi.utils import get_openapi
 from fastapi.sse import EventSourceResponse, ServerSentEvent
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from config import load_config
@@ -113,6 +117,8 @@ class Health(BaseModel):
     last_write: datetime | None  # when the consumer last changed any train
 
 
+VERSION = tomllib.loads((Path(__file__).parent.parent / "pyproject.toml").read_text())["project"]["version"]
+WEB_DIST = Path(__file__).parent.parent / "web" / "dist"
 CALL_TYPES = {"OR", "IP", "DT", "OPOR", "OPIP", "OPDT"}
 
 
@@ -293,7 +299,7 @@ def create_app(service: MapService | None = None, clock: Clock | None = None) ->
             if service is None:
                 made.close()
 
-    app = FastAPI(title="TrainTrack", lifespan=lifespan)
+    app = FastAPI(title="TrainTrack", version=VERSION, lifespan=lifespan)
     app.add_middleware(GZipMiddleware, minimum_size=1000)
 
     def current(app_: FastAPI) -> MapService:
@@ -328,6 +334,22 @@ def create_app(service: MapService | None = None, clock: Clock | None = None) ->
     def health() -> Health:
         return current(app).health()
 
+    def openapi() -> dict:
+        """The schema, plus the stream's event payloads, which no route returns as JSON."""
+        if app.openapi_schema is None:
+            schema = get_openapi(title=app.title, version=app.version, routes=app.routes)
+            extra = PositionChanges.model_json_schema(ref_template="#/components/schemas/{model}")
+            components = schema.setdefault("components", {}).setdefault("schemas", {})
+            components.update(extra.pop("$defs", {}))
+            components["PositionChanges"] = extra
+            app.openapi_schema = schema
+        return app.openapi_schema
+
+    app.openapi = openapi
+
+    # The built web front end (web/dist), if there is one; API routes above take precedence
+    if WEB_DIST.is_dir():
+        app.mount("/", StaticFiles(directory=WEB_DIST, html=True), name="web")
     return app
 
 

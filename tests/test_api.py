@@ -1,6 +1,8 @@
 """The API's routes and wire format, with a stand-in service (no Postgres needed)."""
 
+import json
 from datetime import UTC, datetime
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 from pydantic import TypeAdapter
@@ -14,6 +16,7 @@ from api import (
     to_json,
     train_stop,
 )
+from api_schema import schema
 from live import Clock, Snapshot
 from positions import Journey, Position
 
@@ -111,3 +114,9 @@ def test_the_stream_starts_with_a_snapshot_unless_the_client_is_up_to_date():
         assert "event: snapshot" in text and "id: 1" in text
         with api.stream("GET", "/api/stream?since=0") as response:
             assert "event: changes" in "".join(response.iter_text())
+
+
+def test_the_web_front_ends_copy_of_the_schema_is_current():
+    """web/openapi.json generates the front end's types; regenerate both with `pnpm gen:api` in web/."""
+    with open(Path(__file__).parent.parent / "web" / "openapi.json") as f:
+        assert json.load(f) == schema()
