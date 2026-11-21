@@ -72,3 +72,25 @@ day, e.g. Merseyrail's Wirral loop passes HAMTSQ and JAMESST twice per trip.
 Known gap: re-running `initialise.py` mid-day upserts on `(rid, sequence)`, so a train whose stops were
 shifted by an added pass (or by a schedule message) gets misaligned rows. The bug was already there with
 schedule messages; added passes make it more frequent.
+
+## TIPLOC coordinates loaded (stage 3)
+
+`src/tiploc_locations.py` into `tiploc_locations` (PostGIS), 21 Nov 2026: 6,330 TIPLOCs, made up of
+2,632 NaPTAN good, 84 NaPTAN suspect, 3,612 BPLAN and 2 overrides. Precedence is override > NaPTAN > BPLAN.
+"Suspect" means BPLAN puts the TIPLOC more than 2 km from NaPTAN. Spot checks found BPLAN wrong
+(AYLSPWY, BGLAN digit typos; Aviemore and Brora 3–4 km out). BPLAN placeholders 0/999999/666666 etc. count as missing.
+
+Coverage of the 30,064 journeys scheduled on 21 Nov:
+
+| Stops | Count | With a point |
+| --- | --- | --- |
+| Passenger calls (OR/IP/DT) | 274,304 | 97.5% |
+| All calls incl. operational | 291,254 | 96.5% |
+| Passing points | 203,865 | 83.2% |
+| All stops | 495,119 | 91.0% |
+| Distinct TIPLOCs | 4,671 | 82.2% |
+
+Uncovered calls are mostly buses (EDINAIR, HTRBUS2/3/5, LUTOBUS, DUNT, SANWBUS, EMPKAIR), the Tyne & Wear
+Metro and WBRNPKS. Uncovered passes are London and Leeds junctions with BPLAN placeholders (WATRLWC,
+LEEDSWJ, PRTOBJP, SURRQSJ, KNGXBEL, ROYAOJN). BPLAN-only points aren't checked: GLGCBSJ lands in the
+North Sea (lon 2.03), and the Track Model distance check in stage 5 should catch points like it.
