@@ -13,6 +13,9 @@ from util import LONDON, nearest_datetime, parse_date, parse_time, resolve_seque
 
 logger = logging.getLogger(__name__)
 
+# A TIPLOC further than this from Network Rail track isn't on it (see snap_tiploc_locations)
+SNAP_DISTANCE_METRES = 500
+
 # Stops where a train calls (the rest are passing points)
 CALL_TYPES = "('OR', 'IP', 'DT', 'OPOR', 'OPIP', 'OPDT')"
 
@@ -538,6 +541,48 @@ class Database:
                     link.from_node, link.to_node, link.length(), link.ewkt(),
                 ))
         self.conn.commit()
+
+    def snap_tiploc_locations(self) -> bool:
+        """
+        Snap every TIPLOC to its nearest track link and set its quality from the distance.
+        Does nothing (returns False) until track_links has been loaded.
+        """
+        self.cur.execute("SELECT EXISTS (SELECT FROM track_links)")
+        if not self.cur.fetchone()[0]:
+            return False
+        self.cur.execute("""
+            WITH points AS (
+                SELECT tiploc, source, COALESCE(
+                    ST_SetSRID(ST_MakePoint(easting, northing), 27700), ST_Transform(geom, 27700)
+                ) AS point
+                FROM tiploc_locations
+            ), nearest AS (
+                SELECT p.tiploc, p.source, p.point, link.asset_id, link.geom AS line
+                FROM points p
+                CROSS JOIN LATERAL (
+                    SELECT asset_id, geom FROM track_links ORDER BY geom <-> p.point LIMIT 1
+                ) link
+            )
+            UPDATE tiploc_locations t SET
+                snap_link = n.asset_id,
+                snap_along = ST_LineLocatePoint(n.line, n.point) * ST_Length(n.line),
+                snap_distance_m = ST_Distance(n.line, n.point),
+                snap_geom = ST_ClosestPoint(n.line, n.point),
+                quality = CASE
+                    WHEN n.source = 'override' OR ST_Distance(n.line, n.point) <= %(max_distance)s THEN 'good'
+                    WHEN n.source = 'naptan' THEN 'off_network'
+                    ELSE 'suspect'
+                END
+            FROM nearest n
+            WHERE t.tiploc = n.tiploc
+        """, {"max_distance": SNAP_DISTANCE_METRES})
+        self.conn.commit()
+        return True
+
+    def count_tiploc_locations(self) -> dict[tuple[str, str], int]:
+        """Rows in tiploc_locations by (source, quality)."""
+        self.cur.execute("SELECT source, quality, count(*) FROM tiploc_locations GROUP BY 1, 2")
+        return {(source, quality): count for source, quality, count in self.cur.fetchall()}
 
     def fetch_track_links(self) -> list[tuple]:
         self.cur.execute("SELECT asset_id, from_node, to_node, ST_AsBinary(geom) FROM track_links")

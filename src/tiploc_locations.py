@@ -221,7 +221,9 @@ def load(db: Database, data_dir: str, overrides_file: str = OVERRIDES_FILE, toda
 
     locations = list(combine(naptan, bplan, overrides))
     db.add_tiploc_locations(locations)
-    return Counter((location.source, location.quality) for location in locations)
+    if db.snap_tiploc_locations():
+        logger.info("Snapped locations to the track model")
+    return Counter(db.count_tiploc_locations())
 
 
 def main():

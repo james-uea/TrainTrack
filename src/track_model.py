@@ -102,6 +102,8 @@ def load(db: Database, data_dir: str) -> int:
     logger.info("Read %d track links from %s (%.1fs)", len(links), path, time.time() - start)
     db.replace_track_links(links)
     logger.info("Loaded track links (%.1fs)", time.time() - start)
+    db.snap_tiploc_locations()
+    logger.info("Snapped TIPLOC locations to the track (%.1fs)", time.time() - start)
     return len(links)
 
 
