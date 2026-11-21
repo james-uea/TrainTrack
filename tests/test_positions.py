@@ -174,3 +174,17 @@ def test_path_cache_reverses_paths_stored_the_other_way():
     assert forward.coords[0] == pytest.approx(backward.coords[-1])
     assert forward.coords[0][0] == pytest.approx(623000, abs=2000)  # converted to the British grid
     assert cache("AAA", "ZZZ") is None
+
+
+def test_back_the_way_it_came_after_reversing():
+    train = journey(
+        stop("AAA", "OR", working_departure=t("10:00"), actual_departure=t("10:00")),
+        stop("BBB", "IP", working_arrival=t("10:10"), working_departure=t("10:12"),
+             actual_arrival=t("10:10"), actual_departure=t("10:12")),
+        stop("AAA", "DT", working_arrival=t("10:22")),
+    )
+    reverse = {("BBB", "AAA"): LineString([POINTS["BBB"], POINTS["AAA"]])}
+    position = estimate_position(train, t("10:17"), lambda a, b: paths(a, b) or ((reverse[(a, b)], "track") if (a, b) in reverse else None))
+    assert (position.state, position.from_tiploc, position.to_tiploc, position.fraction) == ("running", "BBB", "AAA", 0.5)
+    assert (position.lat, position.lon) == lat_lon(X + 3000, Y)
+    assert position.bearing == pytest.approx(272.4, abs=1)  # heading west, back towards AAA
