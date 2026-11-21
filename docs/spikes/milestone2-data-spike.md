@@ -120,3 +120,21 @@ Loaded in `nationalrail` on 21 Nov:
 
 Coverage now (usable = good or off_network): passenger calls 97.2%, all calls 95.9%, passes 77.2%, all stops
 88.2%, call-to-call segments 94.6%. Passes dropped from 83% because suspect BPLAN points no longer count.
+
+## Position estimator (stage 6)
+
+`uv run src/positions.py --at 2026-11-21T14:45:00Z` against `nationalrail`. No consumer was running, so this
+uses the live data recorded 13:48–14:51 UTC on 21 Nov.
+
+- 2,284 active trains, **2,252 positioned (98.6%)**. The other 32 have no placeable stop (buses, Tyne & Wear Metro).
+  Similar at 14:30 (98.7%) and 14:50 (98.6%).
+- States: running 1,335, not_started 425 (no reports yet, due out within 15 min), dwelling 225, held 134,
+  terminated 133.
+- Confidence: high 1,288, medium 221, low 743. Of the low ones, 425 are not-started trains, ~270 have no
+  reports yet, and ~40 have reports over 15 minutes old.
+- Runtime: estimating 0.15 s for all trains. Loading takes 0.16 s for the 9,781 paths and 0.76 s for journeys
+  and stops (two queries).
+- At first, holding a train short of the next placed stop until it reported there held 236 trains, many of them a minute after
+  a report, at passing points Darwin never reports (e.g. Heald Green South Jn). Only calls hold now.
+
+`positions_sample.geojson` holds all 2,252 positions at 14:45 (green high, orange medium, red low).
