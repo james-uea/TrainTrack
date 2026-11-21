@@ -11,13 +11,15 @@ import asyncio
 import json
 import logging
 import threading
+from collections.abc import AsyncIterable
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime
 from typing import Literal
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, Header, HTTPException, Response
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import BaseModel
 
 from config import load_config
@@ -49,6 +51,7 @@ class TrainPosition(BaseModel):
 
 
 class PositionsResponse(BaseModel):
+    version: int  # counts ticks; pass it to /api/stream as `since` to get only what changes after this
     at: datetime  # the moment the positions are for
     clock: str
     active: int  # trains running, placed or not
@@ -90,6 +93,16 @@ class TrainDetail(BaseModel):
     position: TrainPosition | None
 
 
+class PositionChanges(BaseModel):
+    """What changed in one tick. Trains not listed are unchanged: a client moves them on with `left` and `due`."""
+    version: int
+    at: datetime
+    clock: str
+    active: int
+    trains: list[TrainPosition]  # new or changed
+    removed: list[str]  # rids no longer shown
+
+
 class Health(BaseModel):
     clock: str
     at: datetime | None
@@ -116,11 +129,40 @@ def position_dict(journey: Journey, position: Position) -> dict:
     }
 
 
-def snapshot_json(snapshot: Snapshot, clock: Clock) -> bytes:
-    return json.dumps({
-        "at": snapshot.at.isoformat(), "clock": str(clock), "active": snapshot.active,
+# A train's position is resent only when one of these changes; in between, a client works out where it is
+CHANGE_FIELDS = ("headcode", "toc", "state", "confidence", "delay", "from_tiploc", "to_tiploc", "left", "due")
+
+
+def change_key(train: dict) -> tuple:
+    key = tuple(train[name] for name in CHANGE_FIELDS)
+    # A train standing still or moving with no times has nothing for a client to work from: send its point
+    return key if train["state"] == "running" and train["due"] else (*key, train["lat"], train["lon"])
+
+
+def to_json(value: dict) -> bytes:
+    return json.dumps(value, separators=(",", ":")).encode()
+
+
+def snapshot_dict(snapshot: Snapshot, clock: Clock, version: int) -> dict:
+    return {
+        "version": version, "at": snapshot.at.isoformat(), "clock": str(clock), "active": snapshot.active,
         "trains": [position_dict(journey, position) for journey, position in snapshot.positions],
-    }, separators=(",", ":")).encode()
+    }
+
+
+def snapshot_json(snapshot: Snapshot, clock: Clock, version: int = 0) -> bytes:
+    return to_json(snapshot_dict(snapshot, clock, version))
+
+
+def changes_dict(before: dict | None, after: dict) -> dict:
+    """The trains in snapshot `after` that are new or changed since `before`, and those that have gone."""
+    old = {train["rid"]: change_key(train) for train in before["trains"]} if before else {}
+    current = {train["rid"] for train in after["trains"]}
+    return {
+        "version": after["version"], "at": after["at"], "clock": after["clock"], "active": after["active"],
+        "trains": [train for train in after["trains"] if old.get(train["rid"]) != change_key(train)],
+        "removed": sorted(set(old) - current),
+    }
 
 
 def train_stop(row: tuple) -> TrainStop:
@@ -147,7 +189,10 @@ class MapService:
         self.clock = clock
         self.live = LivePositions(Database(database_url), clock)
         self.snapshot: Snapshot | None = None
+        self.version = 0
         self.snapshot_bytes: bytes | None = None
+        self.changes_bytes: bytes | None = None  # from the previous version to this one
+        self._snapshot_dict: dict | None = None
         self.positions: dict[str, Position] = {}
         # Request queries get their own connection: psycopg connections aren't shared between threads
         self._db = Database(database_url)
@@ -156,9 +201,13 @@ class MapService:
 
     def tick(self):
         snapshot = self.live.tick()
-        self.snapshot_bytes = snapshot_json(snapshot, self.clock)
+        current = snapshot_dict(snapshot, self.clock, self.version + 1)
+        changes = changes_dict(self._snapshot_dict, current)
+        # Publish everything for the new version together, so readers never mix versions
+        self.snapshot_bytes, self.changes_bytes = to_json(current), to_json(changes)
         self.positions = {journey.rid: position for journey, position in snapshot.positions}
-        self.snapshot = snapshot
+        self.snapshot, self._snapshot_dict = snapshot, current
+        self.version += 1
 
     async def run(self):
         while True:
@@ -169,6 +218,22 @@ class MapService:
             except Exception:
                 logger.exception("Tick failed")
             await asyncio.sleep(TICK.total_seconds())
+
+    async def events(self, since: int | None):
+        """Server-sent events: the whole snapshot unless the client is up to date, then each tick's changes."""
+        version = self.version
+        if since != version:
+            if since is not None and since == version - 1:
+                yield ServerSentEvent(event="changes", id=str(version), raw_data=self.changes_bytes.decode())
+            else:
+                yield ServerSentEvent(event="snapshot", id=str(version), raw_data=self.snapshot_bytes.decode())
+        while True:
+            await self.ticked.wait()
+            if self.version == version + 1:
+                yield ServerSentEvent(event="changes", id=str(self.version), raw_data=self.changes_bytes.decode())
+            else:
+                yield ServerSentEvent(event="snapshot", id=str(self.version), raw_data=self.snapshot_bytes.decode())
+            version = self.version
 
     def query(self, method: str, *args):
         with self._db_lock:
@@ -246,6 +311,18 @@ def create_app(service: MapService | None = None, clock: Clock | None = None) ->
         if detail is None:
             raise HTTPException(404, f"No train {rid}")
         return detail
+
+    @app.get("/api/stream", response_class=EventSourceResponse)
+    async def stream(since: int | None = None, last_event_id: str | None = Header(None)) -> AsyncIterable[ServerSentEvent]:
+        """
+        Positions as server-sent events, one per tick. A `snapshot` event holds every train (as /api/positions);
+        a `changes` event holds only new and changed trains and the rids removed. Pass the version you already have
+        as `since` (or let the browser send Last-Event-ID on reconnect) to start with changes instead of a snapshot.
+        """
+        if since is None and last_event_id and last_event_id.isdigit():
+            since = int(last_event_id)
+        async for event in current(app).events(since):
+            yield event
 
     @app.get("/api/health", response_model=Health)
     def health() -> Health:
