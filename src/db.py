@@ -700,6 +700,47 @@ class Database:
         ) for path in paths])
         self.conn.commit()
 
+    # Positions (positions.py)
+
+    def fetch_segment_paths(self) -> list[tuple]:
+        self.cur.execute("SELECT from_tiploc, to_tiploc, method, ST_AsBinary(geom) FROM segment_paths")
+        return self.cur.fetchall()
+
+    def fetch_journeys_around(self, at) -> list[tuple]:
+        """Journeys whose planned times run from up to 15 minutes after `at` to up to 3 hours before it."""
+        self.cur.execute("""
+            SELECT j.rid, j.train_id, j.toc_code, j.cancelled, j.deactivated
+            FROM train_journeys j
+            JOIN LATERAL (
+                SELECT min(COALESCE(working_departure, working_pass, working_arrival)) AS first_time,
+                    max(COALESCE(working_arrival, working_pass, working_departure)) AS last_time
+                FROM train_stops WHERE rid = j.rid
+            ) span ON TRUE
+            WHERE j.scheduled_start BETWEEN (%(at)s::timestamptz AT TIME ZONE 'Europe/London')::date - 1
+                    AND (%(at)s::timestamptz AT TIME ZONE 'Europe/London')::date
+                AND span.first_time <= %(at)s::timestamptz + INTERVAL '15 minutes'
+                AND span.last_time >= %(at)s::timestamptz - INTERVAL '3 hours'
+        """, {"at": at})
+        return self.cur.fetchall()
+
+    def fetch_position_stops(self, rids: list[str]) -> list[tuple]:
+        """Stops in order with their usable point (British National Grid) and every time positions need."""
+        self.cur.execute(f"""
+            SELECT s.rid, s.tiploc, s.location_type,
+                CASE WHEN {USABLE_LOCATION} THEN ST_X(p.point) END, CASE WHEN {USABLE_LOCATION} THEN ST_Y(p.point) END,
+                s.working_arrival, s.working_departure, s.working_pass,
+                s.estimated_arrival, s.estimated_departure, s.estimated_pass,
+                s.actual_arrival, s.actual_departure, s.actual_pass, s.cancelled
+            FROM train_stops s
+            LEFT JOIN tiploc_locations t ON t.tiploc = s.tiploc
+            LEFT JOIN LATERAL (
+                SELECT COALESCE(ST_SetSRID(ST_MakePoint(t.easting, t.northing), 27700), ST_Transform(t.geom, 27700)) AS point
+            ) p ON TRUE
+            WHERE s.rid = ANY(%s)
+            ORDER BY s.rid, s.sequence
+        """, (rids,))
+        return self.cur.fetchall()
+
     # Coverage (coverage_report.py): which stops can be placed on the map
 
     def fetch_coverage(self, day) -> dict[str, tuple[int, int]]:
