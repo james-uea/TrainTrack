@@ -524,6 +524,21 @@ class Database:
         """, (count,))
         return [JourneySummary(*row) for row in self.cur.fetchall()]
 
+    # Track geometry (track_model.py, segment_paths.py)
+
+    def replace_track_links(self, links: list):
+        self.cur.execute("TRUNCATE track_links")
+        with self.cur.copy("""
+            COPY track_links (asset_id, elr, track_id, start_miles, end_miles, from_node, to_node, length_m, geom)
+            FROM STDIN
+        """) as copy:
+            for link in links:
+                copy.write_row((
+                    link.asset_id, link.elr, link.track_id, link.start_miles, link.end_miles,
+                    link.from_node, link.to_node, link.length(), link.ewkt(),
+                ))
+        self.conn.commit()
+
     # Coverage (coverage_report.py): which stops can be placed on the map
 
     def fetch_coverage(self, day) -> dict[str, tuple[int, int]]:
