@@ -1,7 +1,7 @@
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, time, timedelta
 
 import psycopg
 from psycopg import sql
@@ -9,9 +9,13 @@ from psycopg.types.json import Jsonb
 
 from config import load_config
 from darwin import Location, PushPortMessage, Schedule, TrainStatus, normalise_time
-from util import nearest_datetime, parse_date, parse_time, resolve_sequence
+from util import LONDON, nearest_datetime, parse_date, parse_time, resolve_sequence
 
 logger = logging.getLogger(__name__)
+
+# How far Darwin's working time for a location may be from the planned one when a train calls or passes
+# somewhere more than once and the times don't match exactly
+MATCH_TOLERANCE = timedelta(minutes=5)
 
 STOP_COLUMNS = (
     "rid", "sequence", "tiploc", "location_type", "activities", "planned_activities", "cancelled", "platform",
@@ -97,7 +101,68 @@ def match_location(location: Location, stops: list[StopRow]) -> StopRow | None:
     if len(partial) == 1:
         return partial[0]
 
-    return at_tiploc[0] if len(at_tiploc) == 1 else None
+    if len(at_tiploc) == 1:
+        return at_tiploc[0]
+
+    # The train is here more than once and Darwin's working time differs a little from every call:
+    # take the closest within tolerance
+    return nearest_stop(location, at_tiploc)
+
+
+def time_of_day_gap(at: time, planned: datetime) -> timedelta:
+    """How far apart two times of day are, ignoring the date (so 23:59 and 00:01 are 2 minutes apart)."""
+    planned_local = planned.astimezone(LONDON)
+    seconds = abs(
+        (at.hour * 3600 + at.minute * 60 + at.second)
+        - (planned_local.hour * 3600 + planned_local.minute * 60 + planned_local.second)
+    )
+    return timedelta(seconds=min(seconds, 86400 - seconds))
+
+
+def nearest_stop(location: Location, stops: list[StopRow]) -> StopRow | None:
+    """The stop whose working time is nearest the location's, if within MATCH_TOLERANCE and not tied."""
+    at = parse_time(location.working_time())
+    if at is None:
+        return None
+
+    gaps = []
+    for stop in stops:
+        planned = (stop.working_pass if location.is_pass() else None) or stop.any_working()
+        if planned is not None:
+            gaps.append((time_of_day_gap(at, planned), stop))
+    gaps = sorted((gap for gap in gaps if gap[0] <= MATCH_TOLERANCE), key=lambda gap: gap[0])
+
+    if not gaps or (len(gaps) > 1 and gaps[0][0] == gaps[1][0]):
+        return None
+    return gaps[0][1]
+
+
+def added_pass_position(location: Location, stops: list[StopRow]) -> tuple[int, datetime] | None:
+    """
+    Where a passing point that isn't in the schedule fits: the sequence to insert it at and its working
+    pass time as a full timestamp. None if it falls outside the journey, or no stop has a working time.
+    """
+    at = parse_time(location.working_pass)
+    timed = [stop for stop in stops if stop.any_working() is not None]
+    if at is None or not timed:
+        return None
+
+    # Pick the day that puts the pass closest to some stop on the journey (handles trains past midnight)
+    resolved = min(
+        (nearest_datetime(at, stop.any_working()) for stop in timed),
+        key=lambda candidate: min(abs(candidate - stop.any_working()) for stop in timed),
+    )
+    if not timed[0].any_working() < resolved < timed[-1].any_working():
+        return None
+
+    following = next(stop for stop in timed if stop.any_working() > resolved)
+    return following.sequence, resolved
+
+
+@dataclass
+class StatusResult:
+    unmatched: int = 0  # locations that couldn't be matched to a stop
+    added: int = 0  # passing points stored as new stops because they weren't in the schedule
 
 
 class Database:
@@ -168,7 +233,8 @@ class Database:
             INSERT INTO train_stops ({", ".join(STOP_COLUMNS)})
             VALUES ({", ".join(["%s"] * len(STOP_COLUMNS))})
             ON CONFLICT (rid, sequence) DO UPDATE SET
-                {", ".join(f"{column} = EXCLUDED.{column}" for column in STOP_COLUMNS[2:])}
+                {", ".join(f"{column} = EXCLUDED.{column}" for column in STOP_COLUMNS[2:])},
+                added_from_status = FALSE
         """, [row for schedule in schedules for row in schedule_stop_rows(schedule)])
         self.conn.commit()
 
@@ -196,7 +262,10 @@ class Database:
 
     def handle_message(self, message: PushPortMessage) -> dict[str, int]:
         """Log a Push Port message and apply everything in it, in one transaction."""
-        counts = {"statuses": 0, "unmatched_locations": 0, "unknown_trains": 0, "schedules": 0, "deactivated": 0}
+        counts = {
+            "statuses": 0, "unmatched_locations": 0, "added_locations": 0, "unknown_trains": 0, "schedules": 0,
+            "deactivated": 0,
+        }
         try:
             self.record_event(message)
             for schedule in message.schedules:
@@ -208,7 +277,8 @@ class Database:
                     counts["unknown_trains"] += 1
                 else:
                     counts["statuses"] += 1
-                    counts["unmatched_locations"] += result
+                    counts["unmatched_locations"] += result.unmatched
+                    counts["added_locations"] += result.added
             for deactivated in message.deactivated:
                 self.cur.execute(
                     "UPDATE train_journeys SET deactivated = TRUE, updated_at = now() WHERE rid = %s",
@@ -262,22 +332,47 @@ class Database:
         ])
         self.refresh_position(schedule.rid)
 
-    def apply_status(self, status: TrainStatus) -> int | None:
+    def add_passing_point(self, rid: str, location: Location, stops: list[StopRow]) -> bool:
+        """Store a passing point Darwin reports but the schedule doesn't have, in working-time order."""
+        position = added_pass_position(location, stops)
+        if position is None:
+            return False
+        sequence, working_pass = position
+
+        self.ensure_tiplocs([location.tiploc])
+        # Shift later stops along one place, in two steps so the (rid, sequence) key never collides
+        self.cur.execute("UPDATE train_stops SET sequence = -sequence - 1 WHERE rid = %s AND sequence >= %s", (rid, sequence))
+        self.cur.execute("UPDATE train_stops SET sequence = -sequence WHERE rid = %s AND sequence < 0", (rid,))
+        self.cur.execute("""
+            INSERT INTO train_stops (rid, sequence, tiploc, location_type, working_pass, added_from_status)
+            VALUES (%s, %s, %s, 'PP', %s, TRUE)
+        """, (rid, sequence, location.tiploc, working_pass))
+        logger.debug("Added passing point %s at %s for %s", location.tiploc, location.working_pass, rid)
+        return True
+
+    def apply_status(self, status: TrainStatus) -> StatusResult | None:
         """
-        Apply a TS (train status) update. Returns the number of locations that couldn't be matched to a stop,
-        or None if the train isn't known at all (not in the timetable and no schedule message seen yet).
+        Apply a TS (train status) update, or return None if the train isn't known at all (not in the
+        timetable and no schedule message seen yet).
         """
         stops = self.fetch_stop_rows(status.rid)
         if not stops:
             logger.debug("Status for unknown train %s", status.rid)
             return None
 
+        result = StatusResult()
+        # Passing points missing from the schedule become stops first, so sequences are settled before matching
+        for location in status.locations:
+            if (location.is_pass() and not any(stop.tiploc == location.tiploc for stop in stops)
+                    and self.add_passing_point(status.rid, location, stops)):
+                result.added += 1
+                stops = self.fetch_stop_rows(status.rid)
+
         rows = []
-        unmatched = 0
         for location in status.locations:
             stop = match_location(location, stops)
             if stop is None:
-                unmatched += 1
+                result.unmatched += 1
                 logger.debug("No stop for %s at %s %s", status.rid, location.tiploc, location.planned_key())
                 continue
 
@@ -319,7 +414,7 @@ class Database:
             self.cur.execute("UPDATE train_journeys SET late_reason = %s WHERE rid = %s", (status.late_reason, status.rid))
 
         self.refresh_position(status.rid)
-        return unmatched
+        return result
 
     def refresh_position(self, rid: str):
         """Set the train's last reported location, report type and delay from its latest actual time."""

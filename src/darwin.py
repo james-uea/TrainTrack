@@ -79,6 +79,12 @@ class Location:
             normalise_time(self.working_pass),
         )
 
+    def working_time(self) -> str | None:
+        return self.working_departure or self.working_arrival or self.working_pass
+
+    def is_pass(self) -> bool:
+        return self.working_pass is not None and self.working_arrival is None and self.working_departure is None
+
 
 def normalise_time(value: Any) -> str | None:
     """Normalise HH:MM / HH:MM:SS / datetime values to HH:MM:SS so they compare equal."""
