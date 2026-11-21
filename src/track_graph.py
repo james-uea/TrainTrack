@@ -76,42 +76,55 @@ class TrackGraph:
         point = self.links[snap.asset_id].line.interpolate(snap.along)
         return point.x, point.y
 
-    def route(self, start: Snap, end: Snap) -> Path | None:
-        """The shortest path along the track from one snapped point to another, or None if not connected."""
-        coords = {START: self.point(start), END: self.point(end)}
+    def route(self, start: Snap | list[Snap], end: Snap | list[Snap]) -> Path | None:
+        """
+        The shortest path along the track between two points, or None if no track connects them.
+        Each end can be several candidate snaps (say one per parallel track) and the best pair is used,
+        so a route doesn't cross to the other line and back because its ends snapped to different tracks.
+        """
+        starts = start if isinstance(start, list) else [start]
+        ends = end if isinstance(end, list) else [end]
+        coords = {START: self.point(starts[0]), END: self.point(ends[0])}
 
         def heuristic(a, b):
             return math.dist(coords.get(a) or self.coords[a], coords.get(b) or self.coords[b])
 
         try:
-            for name, snap in ((START, start), (END, end)):
-                link = self.links[snap.asset_id]
-                self._add_virtual_edge(name, link.from_node, snap.along)
-                self._add_virtual_edge(name, link.to_node, link.length - snap.along)
-            if start.asset_id == end.asset_id:
-                self.graph.add_edge(START, END, weight=abs(start.along - end.along), link=start.asset_id)
+            for name, snaps in ((START, starts), (END, ends)):
+                for snap in snaps:
+                    link = self.links[snap.asset_id]
+                    self._add_virtual_edge(name, link.from_node, snap.along, snap)
+                    self._add_virtual_edge(name, link.to_node, link.length - snap.along, snap)
+            for a in starts:
+                for b in ends:
+                    if a.asset_id == b.asset_id:
+                        self._add_virtual_edge(START, END, abs(a.along - b.along), (a, b))
 
             try:
                 nodes = nx.astar_path(self.graph, START, END, heuristic=heuristic, weight="weight")
             except nx.NetworkXNoPath:
                 return None
+            first_hop = self.graph[nodes[0]][nodes[1]]["snap"]
+            last_hop = self.graph[nodes[-2]][nodes[-1]]["snap"]
         finally:
             self.graph.remove_nodes_from([START, END])
 
-        return self._path_line(nodes, start, end)
+        return self._path_line(nodes, first_hop, last_hop)
 
-    def _add_virtual_edge(self, name, node, weight):
+    def _add_virtual_edge(self, name, node, weight, snap):
+        """Join a virtual node to the graph, keeping the shortest way in if there are several."""
         if self.graph.has_edge(name, node) and self.graph[name][node]["weight"] <= weight:
-            return  # a link that starts and ends at the same node: keep the shorter way round
-        self.graph.add_edge(name, node, weight=weight)
+            return
+        self.graph.add_edge(name, node, weight=weight, snap=snap)
 
-    def _path_line(self, nodes: list, start: Snap, end: Snap) -> Path:
+    def _path_line(self, nodes: list, first_hop, last_hop) -> Path:
         pieces: list[list[tuple[float, float]]] = []
 
         if nodes == [START, END]:
-            line = self.links[start.asset_id].line
-            pieces.append(list(substring(line, start.along, end.along).coords))
+            start, end = first_hop
+            pieces.append(list(substring(self.links[start.asset_id].line, start.along, end.along).coords))
         else:
+            start, end = first_hop, last_hop
             first, last = self.links[start.asset_id], self.links[end.asset_id]
             # From the start point to the first real node, then whole links, then into the end point
             exit_at = 0.0 if nodes[1] == first.from_node else first.length

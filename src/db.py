@@ -547,8 +547,7 @@ class Database:
         Snap every TIPLOC to its nearest track link and set its quality from the distance.
         Does nothing (returns False) until track_links has been loaded.
         """
-        self.cur.execute("SELECT EXISTS (SELECT FROM track_links)")
-        if not self.cur.fetchone()[0]:
+        if not self.has_track_links():
             return False
         self.cur.execute("""
             WITH points AS (
@@ -584,9 +583,75 @@ class Database:
         self.cur.execute("SELECT source, quality, count(*) FROM tiploc_locations GROUP BY 1, 2")
         return {(source, quality): count for source, quality, count in self.cur.fetchall()}
 
+    def has_track_links(self) -> bool:
+        self.cur.execute("SELECT EXISTS (SELECT FROM track_links)")
+        return self.cur.fetchone()[0]
+
     def fetch_track_links(self) -> list[tuple]:
         self.cur.execute("SELECT asset_id, from_node, to_node, ST_AsBinary(geom) FROM track_links")
         return self.cur.fetchall()
+
+    def fetch_new_segment_pairs(self, day) -> list[tuple[str, str]]:
+        """Consecutive placed stops of trains scheduled on `day` that have no segment path yet."""
+        self.cur.execute(f"""
+            WITH placed AS (
+                SELECT s.rid, s.sequence, s.tiploc
+                FROM train_stops s
+                JOIN train_journeys j ON j.rid = s.rid
+                JOIN tiploc_locations t ON t.tiploc = s.tiploc
+                WHERE j.scheduled_start = %s AND {USABLE_LOCATION}
+            ), pairs AS (
+                SELECT tiploc AS from_tiploc, LEAD(tiploc) OVER (PARTITION BY rid ORDER BY sequence) AS to_tiploc
+                FROM placed
+            )
+            SELECT DISTINCT p.from_tiploc, p.to_tiploc FROM pairs p
+            WHERE p.to_tiploc IS NOT NULL AND p.to_tiploc <> p.from_tiploc
+                AND NOT EXISTS (
+                    SELECT FROM segment_paths sp WHERE sp.from_tiploc = p.from_tiploc AND sp.to_tiploc = p.to_tiploc
+                )
+            ORDER BY 1, 2
+        """, (day,))
+        return self.cur.fetchall()
+
+    def fetch_placed_tiplocs(self, tiplocs, parallel_metres: float) -> list[tuple]:
+        """
+        (tiploc, easting, northing, snaps) where snaps is a list of (asset_id, along): the nearest track
+        link first, then any others within `parallel_metres` of it (parallel lines). Empty for points
+        that aren't on Network Rail track.
+        """
+        self.cur.execute("""
+            WITH t AS (
+                SELECT tiploc, quality, snap_link, snap_geom,
+                    COALESCE(ST_SetSRID(ST_MakePoint(easting, northing), 27700), ST_Transform(geom, 27700)) AS point
+                FROM tiploc_locations WHERE tiploc = ANY(%s)
+            )
+            SELECT t.tiploc, ST_X(t.point), ST_Y(t.point), COALESCE(
+                array_agg(ARRAY[l.asset_id, (ST_LineLocatePoint(l.geom, t.point) * ST_Length(l.geom))::TEXT]
+                    ORDER BY l.asset_id <> t.snap_link, ST_Distance(l.geom, t.snap_geom))
+                    FILTER (WHERE l.asset_id IS NOT NULL),
+                '{}')
+            FROM t
+            LEFT JOIN track_links l ON t.quality = 'good' AND t.snap_link IS NOT NULL
+                AND ST_DWithin(l.geom, t.snap_geom, %s)
+            GROUP BY t.tiploc, t.point
+        """, (list(tiplocs), parallel_metres))
+        return [
+            (tiploc, x, y, [(asset_id, float(along)) for asset_id, along in snaps])
+            for tiploc, x, y, snaps in self.cur.fetchall()
+        ]
+
+    def add_segment_paths(self, paths: list, simplify_metres: float):
+        self.cur.executemany("""
+            INSERT INTO segment_paths (from_tiploc, to_tiploc, method, fallback_reason, length_m, straight_m, geom)
+            VALUES (%s, %s, %s, %s, %s, %s, ST_Transform(ST_GeomFromText(%s, 27700), 4326))
+            ON CONFLICT (from_tiploc, to_tiploc) DO UPDATE SET
+                method = EXCLUDED.method, fallback_reason = EXCLUDED.fallback_reason, length_m = EXCLUDED.length_m,
+                straight_m = EXCLUDED.straight_m, geom = EXCLUDED.geom, computed_at = now()
+        """, [(
+            path.from_tiploc, path.to_tiploc, path.method, path.fallback_reason, path.length, path.straight,
+            path.line.simplify(simplify_metres).wkt,
+        ) for path in paths])
+        self.conn.commit()
 
     # Coverage (coverage_report.py): which stops can be placed on the map
 
