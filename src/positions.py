@@ -272,6 +272,14 @@ def route(journey: Journey, paths: PathSource) -> list[tuple[float, float]]:
     return list(zip(lons, lats, strict=True))
 
 
+def segment_line(start: Stop, end: Stop, paths: PathSource, tolerance: float = 5.0) -> list[tuple[float, float]]:
+    """The path a train follows from `start` to `end` as (lon, lat) points, simplified to within `tolerance` metres."""
+    line, _ = _path(start, end, paths)
+    line = line.simplify(tolerance)
+    lons, lats = TO_WGS84.transform(*zip(*line.coords, strict=True))
+    return [(round(lon, 6), round(lat, 6)) for lon, lat in zip(lons, lats, strict=True)]
+
+
 def _running(stops, here, there, fraction, state, paths, confidence, delay, age, left, due) -> Position:
     line, method = _path(stops[here], stops[there], paths)
     (x, y), bearing = _point_on(line, fraction)

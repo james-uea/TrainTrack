@@ -16,10 +16,10 @@ from collections.abc import AsyncIterable
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 import uvicorn
-from fastapi import FastAPI, Header, HTTPException, Response
+from fastapi import FastAPI, Header, HTTPException, Query, Response
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.sse import EventSourceResponse, ServerSentEvent
@@ -118,6 +118,7 @@ class Health(BaseModel):
 
 
 VERSION = tomllib.loads((Path(__file__).parent.parent / "pyproject.toml").read_text())["project"]["version"]
+MAX_SEGMENTS = 500  # per request
 WEB_DIST = Path(__file__).parent.parent / "web" / "dist"
 CALL_TYPES = {"OR", "IP", "DT", "OPOR", "OPIP", "OPDT"}
 
@@ -204,6 +205,7 @@ class MapService:
         self._db = Database(database_url)
         self._db_lock = threading.Lock()
         self.ticked = asyncio.Event()
+        self._segments: dict[str, list[tuple[float, float]]] = {}
 
     def tick(self):
         snapshot = self.live.tick()
@@ -267,6 +269,17 @@ class MapService:
             position=TrainPosition(**position_dict(journey, position)) if journey and position else None,
         )
 
+    def segments(self, pairs: list[str]) -> dict[str, list[tuple[float, float]]]:
+        found = {}
+        for pair in pairs[:MAX_SEGMENTS]:
+            if pair not in self._segments:
+                from_tiploc, _, to_tiploc = pair.partition(">")
+                if (line := self.live.segment(from_tiploc, to_tiploc)) is None:
+                    continue
+                self._segments[pair] = line
+            found[pair] = self._segments[pair]
+        return found
+
     def health(self) -> Health:
         snapshot = self.snapshot
         return Health(
@@ -329,6 +342,14 @@ def create_app(service: MapService | None = None, clock: Clock | None = None) ->
             since = int(last_event_id)
         async for event in current(app).events(since):
             yield event
+
+    @app.get("/api/segments", response_model=dict[str, list[tuple[float, float]]])
+    def segments(pairs: Annotated[list[str], Query()]) -> dict[str, list[tuple[float, float]]]:
+        """
+        Track paths between pairs of TIPLOCs, written `FROM>TO`, as (lon, lat) points: the lines trains move along
+        between their `from_tiploc` and `to_tiploc`. Pairs that can't be placed are left out.
+        """
+        return current(app).segments(pairs)
 
     @app.get("/api/health", response_model=Health)
     def health() -> Health:

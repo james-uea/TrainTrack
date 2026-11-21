@@ -27,6 +27,7 @@ from positions import (
     Position,
     Stop,
     estimate_position,
+    segment_line,
     service_status,
 )
 
@@ -98,6 +99,7 @@ class LivePositions:
     def __init__(self, db: Database, clock: Clock):
         self.db, self.clock = db, clock
         self.journeys: dict[str, Journey] = {}
+        self.points: dict[str, tuple[float, float]] = {}  # every placed TIPLOC seen, British National Grid
         self.paths: PathCache | None = None
         self._paths_loaded = 0.0
         self._window_at: datetime | None = None
@@ -184,7 +186,16 @@ class LivePositions:
                 rid, tiploc, location_type, x, y, *times, cancelled = row
                 fresh[rid].stops.append(
                     Stop(tiploc, location_type, (x, y) if x is not None else None, *times, cancelled=cancelled))
+                if x is not None:
+                    self.points[tiploc] = (x, y)
         self.journeys.update(fresh)
+
+    def segment(self, from_tiploc: str, to_tiploc: str) -> list[tuple[float, float]] | None:
+        """The (lon, lat) path between two placed TIPLOCs, as trains are drawn along it, or None if either is unknown."""
+        start, end = self.points.get(from_tiploc), self.points.get(to_tiploc)
+        if start is None or end is None or self.paths is None:
+            return None
+        return segment_line(Stop(from_tiploc, "", start), Stop(to_tiploc, "", end), self.paths)
 
 
 class SteppedClock(Clock):

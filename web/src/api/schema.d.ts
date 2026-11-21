@@ -66,6 +66,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/segments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Segments
+         * @description Track paths between pairs of TIPLOCs, written `FROM>TO`, as (lon, lat) points: the lines trains move along
+         *     between their `from_tiploc` and `to_tiploc`. Pairs that can't be placed are left out.
+         */
+        get: operations["segments_api_segments_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/health": {
         parameters: {
             query?: never;
@@ -342,6 +363,42 @@ export interface operations {
                 };
                 content: {
                     "text/event-stream": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    segments_api_segments_get: {
+        parameters: {
+            query: {
+                pairs: string[];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: [
+                            number,
+                            number
+                        ][];
+                    };
                 };
             };
             /** @description Validation Error */

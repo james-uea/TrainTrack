@@ -120,3 +120,21 @@ def test_the_web_front_ends_copy_of_the_schema_is_current():
     """web/openapi.json generates the front end's types; regenerate both with `pnpm gen:api` in web/."""
     with open(Path(__file__).parent.parent / "web" / "openapi.json") as f:
         assert json.load(f) == schema()
+
+
+def test_segments_leave_out_pairs_that_cant_be_placed_and_are_fetched_once():
+    from types import SimpleNamespace
+
+    from api import MapService
+
+    calls = []
+
+    def segment(from_tiploc, to_tiploc):
+        calls.append((from_tiploc, to_tiploc))
+        return [(-0.7, 51.9), (-0.69, 51.94)] if from_tiploc == "BLTCHLY" else None
+
+    service = SimpleNamespace(_segments={}, live=SimpleNamespace(segment=segment))
+    assert MapService.segments(service, ["BLTCHLY>LEDBRNJ", "NOWHERE>LEDBRNJ"]) == {
+        "BLTCHLY>LEDBRNJ": [(-0.7, 51.9), (-0.69, 51.94)]}
+    MapService.segments(service, ["BLTCHLY>LEDBRNJ"])
+    assert calls == [("BLTCHLY", "LEDBRNJ"), ("NOWHERE", "LEDBRNJ")]
