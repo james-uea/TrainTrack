@@ -15,6 +15,7 @@ from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from itertools import pairwise
 
 import shapely
 from pyproj import Geod, Transformer
@@ -98,7 +99,8 @@ class Position:
     fraction: float  # along from_tiploc -> to_tiploc
     delay_minutes: int | None  # at the last report; None with no reports yet
     last_report_age_s: float | None
-    due: datetime | None = None  # when the train is expected at to_tiploc, while running or held
+    left: datetime | None = None  # when it left from_tiploc, while running or held
+    due: datetime | None = None  # when it's expected at to_tiploc, while running or held
 
 
 # A source of track paths: (from_tiploc, to_tiploc) -> (line in British National Grid, method), or None
@@ -244,22 +246,38 @@ def estimate_position(journey: Journey, at: datetime, paths: PathSource) -> Posi
         if due is not None and at >= due:
             if (there == limit and at < due + HOLD_LIMIT
                     and not timeline._seen(stops[there].actual_arrival or stops[there].actual_pass)):
-                return _running(stops, here, there, 1.0, "held", paths, confidence, delay, age, due)
+                return _running(stops, here, there, 1.0, "held", paths, confidence, delay, age, leaves or arrived, due)
             continue
 
         left = leaves or arrived or at
         span = (due - left).total_seconds() if due else 0
         fraction = min(max((at - left).total_seconds() / span, 0.0), 1.0) if span > 0 else 1.0
-        return _running(stops, here, there, fraction, "running", paths, confidence, delay, age, due)
+        return _running(stops, here, there, fraction, "running", paths, confidence, delay, age, left, due)
     return None
 
 
-def _running(stops, here, there, fraction, state, paths, confidence, delay, age, due) -> Position:
+def route(journey: Journey, paths: PathSource) -> list[tuple[float, float]]:
+    """The train's whole route as (lon, lat) points: the paths between its placed stops, joined end to end."""
+    placed = [stop for stop in journey.stops if stop.point is not None and not stop.cancelled]
+    points: list[tuple[float, float]] = []
+    for start, end in pairwise(placed):
+        line, _ = _path(start, end, paths)
+        coords = list(line.coords)
+        points.extend(coords[1:] if points else coords)
+    if len(placed) == 1:
+        points = [placed[0].point]
+    if not points:
+        return []
+    lons, lats = TO_WGS84.transform([x for x, _ in points], [y for _, y in points])
+    return list(zip(lons, lats, strict=True))
+
+
+def _running(stops, here, there, fraction, state, paths, confidence, delay, age, left, due) -> Position:
     line, method = _path(stops[here], stops[there], paths)
     (x, y), bearing = _point_on(line, fraction)
     lon, lat = TO_WGS84.transform(x, y)
     return Position(lat, lon, bearing, state, confidence(method, there - here - 1), stops[here].tiploc,
-                    stops[there].tiploc, fraction, delay, age.total_seconds() if age else None, due)
+                    stops[there].tiploc, fraction, delay, age.total_seconds() if age else None, left, due)
 
 
 def _path(start: Stop, end: Stop, paths: PathSource) -> tuple[LineString, str]:

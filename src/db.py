@@ -811,6 +811,41 @@ class Database:
         """, (rids,))
         return self.cur.fetchall()
 
+    # The live map (api.py)
+
+    def fetch_train(self, rid: str) -> tuple | None:
+        """(rid, headcode, toc, operator, cancelled, deactivated, cancel reason, late reason, delay) for one train."""
+        self.cur.execute("""
+            SELECT j.rid, j.train_id, j.toc_code, toc.name, COALESCE(j.cancelled, FALSE), j.deactivated,
+                cr.reason, lr.reason, j.delay_minutes
+            FROM train_journeys j
+            LEFT JOIN train_operator_codes toc ON toc.toc = j.toc_code
+            LEFT JOIN cancellation_reasons cr ON cr.code = j.cancel_reason
+            LEFT JOIN late_reasons lr ON lr.code = j.late_reason
+            WHERE j.rid = %s
+        """, (rid,))
+        return self.cur.fetchone()
+
+    def fetch_panel_stops(self, rid: str) -> list[tuple]:
+        """A train's stops in order, with names and every time and platform field the train panel shows."""
+        self.cur.execute("""
+            SELECT s.tiploc, l.location_name, l.reservation_code, s.location_type,
+                s.public_arrival, s.public_departure, s.working_arrival, s.working_departure, s.working_pass,
+                s.estimated_arrival, s.estimated_departure, s.estimated_pass,
+                s.actual_arrival, s.actual_departure, s.actual_pass,
+                s.platform, COALESCE(s.platform_confirmed, FALSE), COALESCE(s.platform_suppressed, FALSE), s.cancelled
+            FROM train_stops s
+            LEFT JOIN locations l ON l.tiploc = s.tiploc
+            WHERE s.rid = %s
+            ORDER BY s.sequence
+        """, (rid,))
+        return self.cur.fetchall()
+
+    def fetch_last_write(self) -> datetime | None:
+        """When the consumer (or a timetable load) last changed any train."""
+        self.cur.execute("SELECT max(updated_at) FROM train_journeys")
+        return self.cur.fetchone()[0]
+
     # Coverage (coverage_report.py): which stops can be placed on the map
 
     def fetch_coverage(self, day) -> dict[str, tuple[int, int]]:

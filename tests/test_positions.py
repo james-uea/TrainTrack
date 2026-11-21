@@ -6,7 +6,7 @@ import pytest
 from shapely import to_wkb
 from shapely.geometry import LineString
 
-from positions import Journey, PathCache, Stop, estimate_position, service_status
+from positions import Journey, PathCache, Stop, estimate_position, route, service_status
 from tiploc_locations import to_wgs84
 from util import LONDON
 
@@ -197,3 +197,19 @@ def test_back_the_way_it_came_after_reversing():
     assert (position.state, position.from_tiploc, position.to_tiploc, position.fraction) == ("running", "BBB", "AAA", 0.5)
     assert (position.lat, position.lon) == lat_lon(X + 3000, Y)
     assert position.bearing == pytest.approx(272.4, abs=1)  # heading west, back towards AAA
+
+
+def test_route_joins_the_paths_between_placed_stops():
+    train = journey(stop("AAA", "OR"), stop("PPP", "PP", placed=False), stop("BBB", "IP"), stop("CCC", "DT"))
+    points = route(train, paths)
+    assert len(points) == 3  # AAA, BBB (shared by both paths, once), CCC
+    assert (points[0][1], points[0][0]) == lat_lon(*POINTS["AAA"])
+    assert (points[-1][1], points[-1][0]) == lat_lon(*POINTS["CCC"])
+
+
+def test_a_running_train_says_when_it_left_and_is_due():
+    train = simple(AAA={"actual_departure": t("10:00")})
+    position = estimate_position(train, t("10:02"), paths)
+    assert position.state == "running"
+    assert (position.left, position.due) == (t("10:00"), t("10:10"))
+    assert position.fraction == pytest.approx((t("10:02") - position.left) / (position.due - position.left))

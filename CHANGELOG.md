@@ -10,9 +10,11 @@ Milestone 3: the live map.
 
 ### Added
 - `live.py`: keeps every train around the current moment in memory and estimates all positions on each tick, reloading only trains whose `updated_at` changed. Its clock runs live, frozen at a past moment (`fixed:`) or replaying the past (`replay:`); `--bench N` times N ticks
+- `api.py`: a FastAPI service with `GET /api/positions` (every placed train), `GET /api/trains/{rid}` (stops, times, platforms, reasons, route and position) and `GET /api/health`. Responses over 1 KB are gzipped. Runs as the `api` service in Compose on port 8000; `MAP_CLOCK` in `.env` sets its clock
+- Dependencies: `fastapi`, `uvicorn[standard]`; `httpx2` for tests
 
 ### Changed
-- Positions carry `due`, when the train is expected at the stop it's heading for
+- Positions carry `left` and `due`: when the train left the stop it's coming from and is expected at the next, so a client can work out its progress itself
 - Every applied train status update now sets `train_journeys.updated_at`, not only one with a new actual time, so forecast changes can be picked up
 
 ## 0.6.0
