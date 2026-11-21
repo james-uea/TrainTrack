@@ -539,6 +539,10 @@ class Database:
                 ))
         self.conn.commit()
 
+    def fetch_track_links(self) -> list[tuple]:
+        self.cur.execute("SELECT asset_id, from_node, to_node, ST_AsBinary(geom) FROM track_links")
+        return self.cur.fetchall()
+
     # Coverage (coverage_report.py): which stops can be placed on the map
 
     def fetch_coverage(self, day) -> dict[str, tuple[int, int]]:
