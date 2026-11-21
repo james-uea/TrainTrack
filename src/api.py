@@ -12,6 +12,7 @@ import json
 import logging
 import threading
 import tomllib
+from collections import OrderedDict
 from collections.abc import AsyncIterable
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime
@@ -119,6 +120,9 @@ class Health(BaseModel):
 
 VERSION = tomllib.loads((Path(__file__).parent.parent / "pyproject.toml").read_text())["project"]["version"]
 MAX_SEGMENTS = 500  # per request
+# Track tiles exist from the zoom the whole network first reads as lines down to the zoom MapLibre overzooms from
+TRACK_ZOOMS = range(5, 15)
+TRACK_TILES_CACHED = 2048  # most recently used tiles kept in memory; the Track Model changes only when reloaded
 WEB_DIST = Path(__file__).parent.parent / "web" / "dist"
 CALL_TYPES = {"OR", "IP", "DT", "OPOR", "OPIP", "OPDT"}
 
@@ -206,6 +210,7 @@ class MapService:
         self._db_lock = threading.Lock()
         self.ticked = asyncio.Event()
         self._segments: dict[str, list[tuple[float, float]]] = {}
+        self._track_tiles: OrderedDict[tuple[int, int, int], bytes] = OrderedDict()
 
     def tick(self):
         snapshot = self.live.tick()
@@ -280,6 +285,17 @@ class MapService:
             found[pair] = self._segments[pair]
         return found
 
+    def track_tile(self, z: int, x: int, y: int) -> bytes:
+        key = (z, x, y)
+        if (tile := self._track_tiles.get(key)) is None:
+            tile = self.query("fetch_track_tile", z, x, y)
+            self._track_tiles[key] = tile
+            if len(self._track_tiles) > TRACK_TILES_CACHED:
+                self._track_tiles.popitem(last=False)
+        else:
+            self._track_tiles.move_to_end(key)
+        return tile
+
     def health(self) -> Health:
         snapshot = self.snapshot
         return Health(
@@ -350,6 +366,14 @@ def create_app(service: MapService | None = None, clock: Clock | None = None) ->
         between their `from_tiploc` and `to_tiploc`. Pairs that can't be placed are left out.
         """
         return current(app).segments(pairs)
+
+    @app.get("/tiles/track/{z}/{x}/{y}.pbf", include_in_schema=False)
+    def track_tile(z: int, x: int, y: int) -> Response:
+        """The Track Model's lines as a vector tile (layer `track`), drawn under the trains."""
+        if z not in TRACK_ZOOMS or not (0 <= x < 2**z and 0 <= y < 2**z):
+            raise HTTPException(404, "No track tile there")
+        return Response(current(app).track_tile(z, x, y), media_type="application/vnd.mapbox-vector-tile",
+                        headers={"Cache-Control": "public, max-age=86400"})
 
     @app.get("/api/health", response_model=Health)
     def health() -> Health:

@@ -138,3 +138,9 @@ def test_segments_leave_out_pairs_that_cant_be_placed_and_are_fetched_once():
         "BLTCHLY>LEDBRNJ": [(-0.7, 51.9), (-0.69, 51.94)]}
     MapService.segments(service, ["BLTCHLY>LEDBRNJ"])
     assert calls == [("BLTCHLY", "LEDBRNJ"), ("NOWHERE", "LEDBRNJ")]
+
+
+def test_track_tiles_only_exist_where_the_map_asks_for_them():
+    with client() as api:
+        assert api.get("/tiles/track/3/3/2.pbf").status_code == 404  # below the zoom the track starts at
+        assert api.get("/tiles/track/8/300/0.pbf").status_code == 404  # x past the edge of the world

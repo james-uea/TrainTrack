@@ -1,5 +1,6 @@
-import { useEffect, useMemo } from "react";
+import { Profiler, useEffect, useMemo } from "react";
 import { api } from "./api/client";
+import { benchEnabled, countCommit, runBench } from "./bench";
 import { startFeed } from "./feed/feed";
 import { Legend } from "./map/Legend";
 import { StatusBar } from "./map/StatusBar";
@@ -20,11 +21,22 @@ export function App() {
 
   useEffect(() => startFeed(store, setStatus), [store, setStatus]);
 
+  useEffect(() => {
+    if (!benchEnabled) return;
+    // Start once trains are on the map and their segments have had a moment to arrive
+    const wait = setInterval(() => {
+      if (store.order.length === 0) return;
+      clearInterval(wait);
+      setTimeout(() => runBench(() => store.order.length), 5000);
+    }, 500);
+    return () => clearInterval(wait);
+  }, [store]);
+
   return (
-    <>
+    <Profiler id="app" onRender={countCommit}>
       <TrainMap store={store} segments={segments} />
       <StatusBar store={store} />
       <Legend />
-    </>
+    </Profiler>
   );
 }

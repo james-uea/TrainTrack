@@ -846,6 +846,24 @@ class Database:
         self.cur.execute("SELECT max(updated_at) FROM train_journeys")
         return self.cur.fetchone()[0]
 
+    def fetch_track_tile(self, z: int, x: int, y: int) -> bytes:
+        """
+        A Mapbox Vector Tile of the Track Model's centrelines in web mercator tile z/x/y, one layer named `track`.
+        Lines are simplified to about a pixel in British National Grid before they're transformed, and links shorter
+        than that are left out, which keeps a whole-country tile near 100 ms.
+        """
+        pixel = 40075016.686 / 2**z / 4096 * 0.6  # metres per tile pixel, allowing for BNG's scale at UK latitudes
+        self.cur.execute("""
+            WITH bounds AS (SELECT ST_TileEnvelope(%(z)s, %(x)s, %(y)s) AS env),
+            tile AS (
+                SELECT ST_AsMVTGeom(ST_Transform(ST_Simplify(t.geom, %(pixel)s), 3857), b.env, 4096, 64, true) AS geom
+                FROM track_links t, bounds b
+                WHERE t.geom && ST_Transform(ST_Expand(b.env, %(buffer)s), 27700) AND t.length_m >= %(pixel)s
+            )
+            SELECT ST_AsMVT(tile, 'track', 4096, 'geom') FROM tile WHERE geom IS NOT NULL
+        """, {"z": z, "x": x, "y": y, "pixel": pixel, "buffer": 40075016.686 / 2**z * 64 / 4096})
+        return bytes(self.cur.fetchone()[0])
+
     # Coverage (coverage_report.py): which stops can be placed on the map
 
     def fetch_coverage(self, day) -> dict[str, tuple[int, int]]:

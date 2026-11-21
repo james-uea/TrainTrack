@@ -188,3 +188,25 @@ def test_a_bplan_point_too_far_from_its_neighbours_is_suspect(db):
     assert db.cur.fetchone() == ("suspect",)
     db.cur.execute("SELECT from_tiploc, to_tiploc FROM segment_paths")
     assert db.cur.fetchall() == [("AAA", "BBB")]
+
+
+
+def tile_containing(lon: float, lat: float, z: int) -> tuple[int, int, int]:
+    import math
+    n = 2**z
+    return z, int((lon + 180) / 360 * n), int((1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * n)
+
+
+def test_track_tiles_hold_the_track_they_cover_and_leave_out_links_shorter_than_a_pixel(db):
+    lon, lat = to_wgs84(X + 1000, Y)
+    at_8, at_14 = tile_containing(lon, lat, 8), tile_containing(lon, lat, 14)
+
+    db.replace_track_links(assign_nodes([track_link("main", (0, 0), (2000, 0))]))
+    main_only = db.fetch_track_tile(*at_8), db.fetch_track_tile(*at_14)
+    assert all(main_only)
+    assert db.fetch_track_tile(*tile_containing(lon + 1, lat, 14)) == b""  # nothing there
+
+    # A 5 m spur is under a pixel at zoom 8 (~23 m) but not at zoom 14 (~0.4 m)
+    db.replace_track_links(assign_nodes([track_link("main", (0, 0), (2000, 0)), track_link("spur", (1000, 0), (1000, 5))]))
+    assert db.fetch_track_tile(*at_8) == main_only[0]
+    assert db.fetch_track_tile(*at_14) != main_only[1]
