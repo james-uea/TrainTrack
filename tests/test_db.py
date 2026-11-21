@@ -103,6 +103,22 @@ def test_reloading_the_timetable_keeps_live_data(db):
     assert stop(db, "AAA", "actual_departure") == (london(2026, 9, 5, 23, 41),)
 
 
+def test_reloading_after_a_schedule_message_renumbered_stops(db):
+    db.add_schedules([parse_schedule(SCHEDULE)])
+    # A schedule message adds a passing point near the start, shifting every later stop along one
+    revised = {**SCHEDULE, "PP": [{"tpl": "ABB", "wtp": "23:45"}, *SCHEDULE["PP"]]}
+    db.handle_message(parse_message(envelope({"uR": {"schedule": revised}})))
+    db.handle_message(status({"tpl": "CCC", "wta": "23:58", "wtd": "23:59", "arr": {"at": "00:01"}}))
+
+    db.add_schedules([parse_schedule(SCHEDULE)])  # the timetable again, without ABB
+
+    db.cur.execute("SELECT sequence, tiploc, actual_arrival FROM train_stops WHERE rid = %s ORDER BY sequence", (RID,))
+    assert db.cur.fetchall() == [
+        (0, "AAA", None), (1, "BBB", None), (2, "CCC", london(2026, 9, 6, 0, 1)), (3, "DDD", None), (4, "EEE", None),
+        (5, "FFF", None),
+    ]
+
+
 def test_reading_for_the_terminal_app(db):
     db.add_schedules([parse_schedule(SCHEDULE)])
     db.handle_message(status({"tpl": "AAA", "wtd": "23:40", "dep": {"at": "23:41"}}))

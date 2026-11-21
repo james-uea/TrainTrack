@@ -27,6 +27,12 @@ USABLE_LOCATION = "COALESCE(t.quality IN ('good', 'off_network'), FALSE)"
 # somewhere more than once and the times don't match exactly
 MATCH_TOLERANCE = timedelta(minutes=5)
 
+# Live data a stop keeps when its journey's stops are replaced by a newer schedule
+LIVE_COLUMNS = (
+    "actual_arrival", "actual_departure", "actual_pass", "estimated_arrival", "estimated_departure", "estimated_pass",
+    "platform_confirmed", "platform_suppressed",
+)
+
 STOP_COLUMNS = (
     "rid", "sequence", "tiploc", "location_type", "activities", "planned_activities", "cancelled", "platform",
     "public_arrival", "public_departure", "working_arrival", "working_departure", "working_pass",
@@ -254,18 +260,32 @@ class Database:
 
     def add_schedules(self, schedules: list[Schedule]):
         """
-        Load the day's timetable. Planned data is overwritten; live data (actuals, forecasts, positions)
-        is left alone so re-running the import mid-day is safe.
+        Load the day's timetable. A journey that already has stops gets them replaced, carrying live data
+        (actuals, forecasts, platform confirmation) over to calls with the same TIPLOC and working times, as
+        for a schedule message. So re-running the import mid-day is safe even after schedule messages or
+        Darwin-added passing points have renumbered a journey's stops.
         """
         self.ensure_tiplocs(stop.tiploc for schedule in schedules for stop in schedule.stops)
         self._upsert_journeys(schedules)
-        self.cur.executemany(f"""
-            INSERT INTO train_stops ({", ".join(STOP_COLUMNS)})
-            VALUES ({", ".join(["%s"] * len(STOP_COLUMNS))})
-            ON CONFLICT (rid, sequence) DO UPDATE SET
-                {", ".join(f"{column} = EXCLUDED.{column}" for column in STOP_COLUMNS[2:])},
-                added_from_status = FALSE
-        """, [row for schedule in schedules for row in schedule_stop_rows(schedule)])
+        self.cur.execute("CREATE TEMP TABLE new_stops (LIKE train_stops INCLUDING DEFAULTS) ON COMMIT DROP")
+        with self.cur.copy(f"COPY new_stops ({", ".join(STOP_COLUMNS)}) FROM STDIN") as copy:
+            for schedule in schedules:
+                for row in schedule_stop_rows(schedule):
+                    copy.write_row(row)
+        self.cur.execute(f"""
+            UPDATE new_stops n SET {", ".join(f"{column} = o.{column}" for column in LIVE_COLUMNS)}
+            FROM (
+                SELECT DISTINCT ON (rid, tiploc, working_arrival, working_departure, working_pass) *
+                FROM train_stops WHERE rid IN (SELECT DISTINCT rid FROM new_stops)
+                ORDER BY rid, tiploc, working_arrival, working_departure, working_pass, sequence
+            ) o
+            WHERE o.rid = n.rid AND o.tiploc = n.tiploc
+                AND o.working_arrival IS NOT DISTINCT FROM n.working_arrival
+                AND o.working_departure IS NOT DISTINCT FROM n.working_departure
+                AND o.working_pass IS NOT DISTINCT FROM n.working_pass
+        """)
+        self.cur.execute("DELETE FROM train_stops WHERE rid IN (SELECT DISTINCT rid FROM new_stops)")
+        self.cur.execute("INSERT INTO train_stops SELECT * FROM new_stops")
         self.conn.commit()
 
     def _upsert_journeys(self, schedules: list[Schedule]):
