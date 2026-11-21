@@ -1,0 +1,4 @@
+tiploc,lat,lon,note
+CNNBELL,51.548732,-0.092191,Canonbury East London line platforms; NaPTAN point for CNNB (BPLAN has 0 0)
+HIGHBYE,51.546087,-0.103767,Highbury & Islington East London line platforms; NaPTAN point for HIGHBYA (BPLAN has 0 0)
+TRNHMGN,51.495148,-0.254555,Turnham Green; NaPTAN point for the Underground station 9400ZZLUTNG (BPLAN puts it at Barking)

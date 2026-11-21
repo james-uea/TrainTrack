@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from conftest import envelope
+from conftest import envelope, load_fixture_lines
 from test_darwin import SCHEDULE
 
 from darwin import parse_message, parse_schedule
@@ -25,8 +25,8 @@ def stop(db, tiploc, *columns):
     return db.cur.fetchone()
 
 
-def status(*locations, late_reason=None):
-    ts = {"rid": RID, "uid": "W00001", "ssd": "2026-09-05", "Location": list(locations)}
+def status(*locations, late_reason=None, rid=RID):
+    ts = {"rid": rid, "uid": "W00001", "ssd": "2026-09-05", "Location": list(locations)}
     if late_reason:
         ts["LateReason"] = late_reason
     return parse_message(envelope({"ts": "2026-09-05T23:59:00+01:00", "uR": {"updateOrigin": "TD", "TS": ts}}, 1))
@@ -49,7 +49,7 @@ def test_status_sets_actuals_forecasts_and_position(db):
         {"tpl": "CCC", "wta": "23:58", "wtd": "23:59", "arr": {"at": "00:01"}, "dep": {"at": "00:03"},
          "plat": {"conf": "true", "": "2"}},
         {"tpl": "DDD", "wtp": "00:05:30", "pass": {"et": "00:09"}},
-        {"tpl": "ZZZ", "wtp": "00:06"},
+        {"tpl": "ZZZ", "wta": "00:06", "wtd": "00:07"},  # a call that isn't in the schedule
         late_reason="520",
     ))
     assert counts["statuses"] == 1
@@ -103,6 +103,22 @@ def test_reloading_the_timetable_keeps_live_data(db):
     assert stop(db, "AAA", "actual_departure") == (london(2026, 9, 5, 23, 41),)
 
 
+def test_reloading_after_a_schedule_message_renumbered_stops(db):
+    db.add_schedules([parse_schedule(SCHEDULE)])
+    # A schedule message adds a passing point near the start, shifting every later stop along one
+    revised = {**SCHEDULE, "PP": [{"tpl": "ABB", "wtp": "23:45"}, *SCHEDULE["PP"]]}
+    db.handle_message(parse_message(envelope({"uR": {"schedule": revised}})))
+    db.handle_message(status({"tpl": "CCC", "wta": "23:58", "wtd": "23:59", "arr": {"at": "00:01"}}))
+
+    db.add_schedules([parse_schedule(SCHEDULE)])  # the timetable again, without ABB
+
+    db.cur.execute("SELECT sequence, tiploc, actual_arrival FROM train_stops WHERE rid = %s ORDER BY sequence", (RID,))
+    assert db.cur.fetchall() == [
+        (0, "AAA", None), (1, "BBB", None), (2, "CCC", london(2026, 9, 6, 0, 1)), (3, "DDD", None), (4, "EEE", None),
+        (5, "FFF", None),
+    ]
+
+
 def test_reading_for_the_terminal_app(db):
     db.add_schedules([parse_schedule(SCHEDULE)])
     db.handle_message(status({"tpl": "AAA", "wtd": "23:40", "dep": {"at": "23:41"}}))
@@ -110,3 +126,154 @@ def test_reading_for_the_terminal_app(db):
     [train] = db.fetch_train_journeys()
     assert (train.origin, train.destination, train.last_location, train.delay_minutes) == ("AAA", "FFF", "AAA", 1)
     assert [s.tiploc for s in db.fetch_train_stops(RID)] == ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF"]
+
+
+# Passing points: Darwin's working pass times drift from the timetable and it reports passes the schedule lacks
+
+LOOP = {
+    "rid": "202611218000002", "uid": "W00002", "trainId": "2L01", "ssd": "2026-11-21", "toc": "ME",
+    "OR": {"tpl": "AAA", "wtd": "10:00"},
+    "PP": [{"tpl": "JJJ", "wtp": "10:10"}, {"tpl": "JJJ", "wtp": "10:30"}],
+    "IP": {"tpl": "BBB", "wta": "10:20", "wtd": "10:21"},
+    "DT": {"tpl": "ZZZ", "wta": "10:40"},
+}
+LOOP_RID = LOOP["rid"]
+
+
+def loop_stops(db, *columns):
+    db.cur.execute(f"SELECT {', '.join(columns)} FROM train_stops WHERE rid = %s ORDER BY sequence", (LOOP_RID,))
+    return db.cur.fetchall()
+
+
+def test_pass_time_a_few_minutes_out_matches_the_nearest_visit(db):
+    db.add_schedules([parse_schedule(LOOP)])
+
+    counts = db.handle_message(status(
+        {"tpl": "JJJ", "wtp": "10:12", "pass": {"at": "10:13"}},
+        {"tpl": "JJJ", "wtp": "10:28", "pass": {"et": "10:29"}},
+        rid=LOOP_RID,
+    ))
+
+    assert (counts["unmatched_locations"], counts["added_locations"]) == (0, 0)
+    assert loop_stops(db, "tiploc", "actual_pass", "estimated_pass") == [
+        ("AAA", None, None),
+        ("JJJ", london(2026, 11, 21, 10, 13), None),
+        ("BBB", None, None),
+        ("JJJ", None, london(2026, 11, 21, 10, 29)),
+        ("ZZZ", None, None),
+    ]
+
+
+def test_pass_time_too_far_from_either_visit_is_unmatched(db):
+    db.add_schedules([parse_schedule(LOOP)])
+    counts = db.handle_message(status({"tpl": "JJJ", "wtp": "10:20", "pass": {"at": "10:20"}}, rid=LOOP_RID))
+    assert counts["unmatched_locations"] == 1
+    assert loop_stops(db, "actual_pass") == [(None,)] * 5
+
+
+# Out to QQQ and back, but the schedule lists only the return call there (as Darwin did for 2K37 at Queens Road)
+THERE_AND_BACK = {
+    "rid": "202611218000003", "uid": "W00003", "trainId": "2L03", "ssd": "2026-11-21", "toc": "ME",
+    "OR": {"tpl": "AAA", "wtd": "10:00"},
+    "IP": [{"tpl": "BBB", "wta": "10:20", "wtd": "10:21"}, {"tpl": "QQQ", "wta": "10:40", "wtd": "10:41"}],
+    "DT": {"tpl": "ZZZ", "wta": "10:50"},
+}
+
+
+def there_and_back(db, *columns):
+    db.cur.execute(f"SELECT {', '.join(columns)} FROM train_stops WHERE rid = %s ORDER BY sequence",
+                   (THERE_AND_BACK["rid"],))
+    return db.cur.fetchall()
+
+
+def test_a_visit_far_from_the_only_scheduled_one_is_not_matched_to_it(db):
+    db.add_schedules([parse_schedule(THERE_AND_BACK)])
+    rid = THERE_AND_BACK["rid"]
+
+    # The outbound pass, 30 minutes before the return call: stored as a pass of its own
+    counts = db.handle_message(status({"tpl": "QQQ", "wtp": "10:10", "pass": {"at": "10:11"}}, rid=rid))
+    assert (counts["unmatched_locations"], counts["added_locations"]) == (0, 1)
+    # A call 12 minutes out from the only one at BBB is still that call
+    counts = db.handle_message(status({"tpl": "BBB", "wta": "10:32", "arr": {"at": "10:33"}}, rid=rid))
+    assert counts["unmatched_locations"] == 0
+    # A call an hour out isn't, and calls are never added
+    counts = db.handle_message(status({"tpl": "ZZZ", "wta": "11:50", "arr": {"at": "11:51"}}, rid=rid))
+    assert (counts["unmatched_locations"], counts["added_locations"]) == (1, 0)
+
+    assert there_and_back(db, "tiploc", "added_from_status", "actual_pass", "actual_arrival") == [
+        ("AAA", False, None, None),
+        ("QQQ", True, london(2026, 11, 21, 10, 11), None),
+        ("BBB", False, None, london(2026, 11, 21, 10, 33)),
+        ("QQQ", False, None, None),
+        ("ZZZ", False, None, None),
+    ]
+
+
+def test_pass_missing_from_the_schedule_is_stored_in_order(db):
+    db.add_schedules([parse_schedule(LOOP)])
+    db.handle_message(status({"tpl": "AAA", "wtd": "10:00", "dep": {"at": "10:01"}}, rid=LOOP_RID))
+
+    counts = db.handle_message(status(
+        {"tpl": "KKK", "wtp": "10:15", "pass": {"at": "10:16"}},
+        {"tpl": "BBB", "wta": "10:20", "wtd": "10:21", "arr": {"at": "10:22"}},
+        rid=LOOP_RID,
+    ))
+
+    assert (counts["unmatched_locations"], counts["added_locations"]) == (0, 1)
+    assert loop_stops(db, "sequence", "tiploc", "location_type", "added_from_status", "actual_pass") == [
+        (0, "AAA", "OR", False, None),
+        (1, "JJJ", "PP", False, None),
+        (2, "KKK", "PP", True, london(2026, 11, 21, 10, 16)),
+        (3, "BBB", "IP", False, None),
+        (4, "JJJ", "PP", False, None),
+        (5, "ZZZ", "DT", False, None),
+    ]
+    assert loop_stops(db, "actual_arrival")[3] == (london(2026, 11, 21, 10, 22),)
+    db.cur.execute("SELECT last_tiploc FROM train_journeys WHERE rid = %s", (LOOP_RID,))
+    assert db.cur.fetchone() == ("BBB",)
+
+    # The next report for it matches the stored row instead of adding another
+    counts = db.handle_message(status({"tpl": "KKK", "wtp": "10:15", "pass": {"at": "10:16"}}, rid=LOOP_RID))
+    assert (counts["unmatched_locations"], counts["added_locations"]) == (0, 0)
+    assert len(loop_stops(db, "tiploc")) == 6
+
+
+def test_locations_still_unmatched(db):
+    db.add_schedules([parse_schedule(LOOP)])
+
+    counts = db.handle_message(status(
+        {"tpl": "KKK", "wtp": "09:50"},  # a pass before the train starts
+        {"tpl": "KKK", "wtp": "10:50"},  # and after it ends
+        {"tpl": "MMM", "wta": "10:15", "wtd": "10:16"},  # a call that isn't in the schedule
+        rid=LOOP_RID,
+    ))
+
+    assert (counts["unmatched_locations"], counts["added_locations"]) == (3, 0)
+    assert len(loop_stops(db, "tiploc")) == 5
+
+
+# Recorded 2026-11-21: 2V35 Banbury → Didcot passes Tackley, which the day's timetable doesn't list
+TIMETABLE_2V35 = {
+    "rid": "202611216700781", "uid": "C00781", "trainId": "2V35", "ssd": "2026-11-21", "toc": "GW",
+    "OR": {"tpl": "BNBR", "wtd": "13:34"},
+    "IP": [{"tpl": "KINSSTN", "wta": "13:38:30", "wtd": "13:39:30"}, {"tpl": "HEYFORD", "wta": "13:47", "wtd": "13:48"},
+           {"tpl": "OXFD", "wta": "14:03", "wtd": "14:05"}],
+    "PP": [{"tpl": "AYNHOJ", "wtp": "13:42"}, {"tpl": "WVCTJN", "wtp": "13:58:30"}, {"tpl": "OXFDNNJ", "wtp": "14:00"}],
+    "DT": {"tpl": "DIDCOTP", "wta": "14:23"},
+}
+
+
+def test_recorded_pass_missing_from_the_timetable(db):
+    db.add_schedules([parse_schedule(TIMETABLE_2V35)])
+    [line] = load_fixture_lines("added_passing_point.jsonl")
+
+    counts = db.handle_message(parse_message(line))
+
+    assert (counts["unmatched_locations"], counts["added_locations"]) == (0, 1)
+    db.cur.execute("""
+        SELECT tiploc, added_from_status, estimated_pass FROM train_stops
+        WHERE rid = %s ORDER BY sequence
+    """, (TIMETABLE_2V35["rid"],))
+    rows = db.cur.fetchall()
+    assert [row[0] for row in rows] == ["BNBR", "KINSSTN", "AYNHOJ", "HEYFORD", "TACKLEY", "WVCTJN", "OXFDNNJ", "OXFD", "DIDCOTP"]
+    assert rows[4] == ("TACKLEY", True, datetime(2026, 11, 21, 13, 51, tzinfo=LONDON))

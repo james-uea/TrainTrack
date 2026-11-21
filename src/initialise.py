@@ -17,7 +17,9 @@ from os.path import isfile, join
 
 from lxml import etree
 
+import segment_paths
 from config import load_config
+from coverage_report import summary_line
 from darwin import SCHEDULE_STOP_TYPES, Schedule, ScheduleStop
 from db import Database
 from util import LONDON, convert_to_bool, parse_time
@@ -215,6 +217,9 @@ def run(db: Database, data_dir: str):
         db.add_schedules(batch)
         total += len(batch)
     logger.info("Finished journey init: %d journeys (%.1fs)", total, time.time() - start)
+    today = datetime.now(LONDON).date()
+    logger.info("Coverage today: %s", summary_line(db.fetch_coverage(today)))
+    segment_paths.update(db, today)  # track paths for stop pairs not seen before
 
 
 def seconds_until(at: dtime) -> float:

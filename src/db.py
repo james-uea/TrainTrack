@@ -1,7 +1,7 @@
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, time, timedelta
 
 import psycopg
 from psycopg import sql
@@ -9,9 +9,32 @@ from psycopg.types.json import Jsonb
 
 from config import load_config
 from darwin import Location, PushPortMessage, Schedule, TrainStatus, normalise_time
-from util import nearest_datetime, parse_date, parse_time, resolve_sequence
+from util import LONDON, nearest_datetime, parse_date, parse_time, resolve_sequence
 
 logger = logging.getLogger(__name__)
+
+# A TIPLOC further than this from Network Rail track isn't on it (see snap_tiploc_locations)
+SNAP_DISTANCE_METRES = 500
+
+# Stops where a train calls (the rest are passing points)
+CALL_TYPES = "('OR', 'IP', 'DT', 'OPOR', 'OPIP', 'OPDT')"
+
+# A tiploc_locations row `t` that can place a stop on the map. off_network points (stations away from
+# Network Rail track) are placed but joined with straight lines; suspect points aren't used
+USABLE_LOCATION = "COALESCE(t.quality IN ('good', 'off_network'), FALSE)"
+
+# How far Darwin's working time for a location may be from the planned one when a train calls or passes
+# somewhere more than once and the times don't match exactly
+MATCH_TOLERANCE = timedelta(minutes=5)
+# A TIPLOC the train visits once still matches a report this far from the planned time. Further out the
+# report is of a visit the schedule doesn't have (on 21 Nov all 19 gaps over an hour were wrong-leg matches)
+SINGLE_VISIT_TOLERANCE = timedelta(minutes=15)
+
+# Live data a stop keeps when its journey's stops are replaced by a newer schedule
+LIVE_COLUMNS = (
+    "actual_arrival", "actual_departure", "actual_pass", "estimated_arrival", "estimated_departure", "estimated_pass",
+    "platform_confirmed", "platform_suppressed",
+)
 
 STOP_COLUMNS = (
     "rid", "sequence", "tiploc", "location_type", "activities", "planned_activities", "cancelled", "platform",
@@ -97,7 +120,83 @@ def match_location(location: Location, stops: list[StopRow]) -> StopRow | None:
     if len(partial) == 1:
         return partial[0]
 
-    return at_tiploc[0] if len(at_tiploc) == 1 else None
+    if len(at_tiploc) == 1:
+        if parse_time(location.working_time()) is None:
+            return at_tiploc[0]
+        return nearest_stop(location, at_tiploc, SINGLE_VISIT_TOLERANCE)
+
+    # The train is here more than once and Darwin's working time differs a little from every call:
+    # take the closest within tolerance
+    return nearest_stop(location, at_tiploc)
+
+
+def time_of_day_gap(at: time, planned: datetime) -> timedelta:
+    """How far apart two times of day are, ignoring the date (so 23:59 and 00:01 are 2 minutes apart)."""
+    planned_local = planned.astimezone(LONDON)
+    seconds = abs(
+        (at.hour * 3600 + at.minute * 60 + at.second)
+        - (planned_local.hour * 3600 + planned_local.minute * 60 + planned_local.second)
+    )
+    return timedelta(seconds=min(seconds, 86400 - seconds))
+
+
+def visit_gaps(location: Location, stops: list[StopRow]) -> list[tuple[timedelta, StopRow]]:
+    """How far each stop's working time is from the location's, nearest first (empty if Darwin sent none)."""
+    at = parse_time(location.working_time())
+    if at is None:
+        return []
+    gaps = []
+    for stop in stops:
+        planned = (stop.working_pass if location.is_pass() else None) or stop.any_working()
+        if planned is not None:
+            gaps.append((time_of_day_gap(at, planned), stop))
+    return sorted(gaps, key=lambda gap: gap[0])
+
+
+def nearest_stop(location: Location, stops: list[StopRow], tolerance: timedelta = MATCH_TOLERANCE) -> StopRow | None:
+    """The stop whose working time is nearest the location's, if within tolerance and not tied."""
+    gaps = [gap for gap in visit_gaps(location, stops) if gap[0] <= tolerance]
+
+    if not gaps or (len(gaps) > 1 and gaps[0][0] == gaps[1][0]):
+        return None
+    return gaps[0][1]
+
+
+def is_unscheduled_visit(location: Location, stops: list[StopRow]) -> bool:
+    """True if no stop at the location's TIPLOC is within SINGLE_VISIT_TOLERANCE of its working time."""
+    at_tiploc = [stop for stop in stops if stop.tiploc == location.tiploc]
+    if not at_tiploc:
+        return True
+    gaps = visit_gaps(location, at_tiploc)
+    return bool(gaps) and gaps[0][0] > SINGLE_VISIT_TOLERANCE and match_location(location, at_tiploc) is None
+
+
+def added_pass_position(location: Location, stops: list[StopRow]) -> tuple[int, datetime] | None:
+    """
+    Where a passing point that isn't in the schedule fits: the sequence to insert it at and its working
+    pass time as a full timestamp. None if it falls outside the journey, or no stop has a working time.
+    """
+    at = parse_time(location.working_pass)
+    timed = [stop for stop in stops if stop.any_working() is not None]
+    if at is None or not timed:
+        return None
+
+    # Pick the day that puts the pass closest to some stop on the journey (handles trains past midnight)
+    resolved = min(
+        (nearest_datetime(at, stop.any_working()) for stop in timed),
+        key=lambda candidate: min(abs(candidate - stop.any_working()) for stop in timed),
+    )
+    if not timed[0].any_working() < resolved < timed[-1].any_working():
+        return None
+
+    following = next(stop for stop in timed if stop.any_working() > resolved)
+    return following.sequence, resolved
+
+
+@dataclass
+class StatusResult:
+    unmatched: int = 0  # locations that couldn't be matched to a stop
+    added: int = 0  # passing points stored as new stops because they weren't in the schedule
 
 
 class Database:
@@ -155,21 +254,69 @@ class Database:
             [(tiploc, tiploc) for tiploc in set(tiplocs) if tiploc],
         )
 
+    def add_tiploc_locations(self, locations: list):
+        """
+        Replace TIPLOC coordinates (from tiploc_locations.py), leaving rows whose values haven't changed alone.
+        Segment paths to or from a TIPLOC that moved or went are dropped, for segment_paths.py to route again.
+        """
+        self.cur.execute("CREATE TEMP TABLE old_points ON COMMIT DROP AS SELECT tiploc, geom FROM tiploc_locations")
+        self.cur.executemany("""
+            INSERT INTO tiploc_locations (tiploc, name, geom, easting, northing, source, quality)
+            VALUES (%s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326), %s, %s, %s, %s)
+            ON CONFLICT (tiploc) DO UPDATE SET
+                name = EXCLUDED.name, geom = EXCLUDED.geom, easting = EXCLUDED.easting,
+                northing = EXCLUDED.northing, source = EXCLUDED.source, quality = EXCLUDED.quality, updated_at = now()
+            WHERE (tiploc_locations.name, tiploc_locations.geom, tiploc_locations.easting, tiploc_locations.northing,
+                    tiploc_locations.source, tiploc_locations.quality)
+                IS DISTINCT FROM (EXCLUDED.name, EXCLUDED.geom, EXCLUDED.easting, EXCLUDED.northing,
+                    EXCLUDED.source, EXCLUDED.quality)
+        """, [(
+            location.tiploc, location.name, location.lon, location.lat, location.easting, location.northing,
+            location.source, location.quality,
+        ) for location in locations])
+        # A TIPLOC no source has any more (e.g. a removed override with no other point) loses its row
+        tiplocs = [location.tiploc for location in locations]
+        self.cur.execute("DELETE FROM tiploc_locations WHERE NOT (tiploc = ANY(%s))", (tiplocs,))
+        self.cur.execute("""
+            WITH moved AS (
+                SELECT o.tiploc FROM old_points o LEFT JOIN tiploc_locations t USING (tiploc)
+                WHERE t.geom IS NULL OR NOT ST_Equals(t.geom, o.geom)
+            )
+            DELETE FROM segment_paths
+            WHERE from_tiploc IN (SELECT tiploc FROM moved) OR to_tiploc IN (SELECT tiploc FROM moved)
+        """)
+        self.conn.commit()
+
     # Timetable (bulk, from initialise.py)
 
     def add_schedules(self, schedules: list[Schedule]):
         """
-        Load the day's timetable. Planned data is overwritten; live data (actuals, forecasts, positions)
-        is left alone so re-running the import mid-day is safe.
+        Load the day's timetable. A journey that already has stops gets them replaced, carrying live data
+        (actuals, forecasts, platform confirmation) over to calls with the same TIPLOC and working times, as
+        for a schedule message. So re-running the import mid-day is safe even after schedule messages or
+        Darwin-added passing points have renumbered a journey's stops.
         """
         self.ensure_tiplocs(stop.tiploc for schedule in schedules for stop in schedule.stops)
         self._upsert_journeys(schedules)
-        self.cur.executemany(f"""
-            INSERT INTO train_stops ({", ".join(STOP_COLUMNS)})
-            VALUES ({", ".join(["%s"] * len(STOP_COLUMNS))})
-            ON CONFLICT (rid, sequence) DO UPDATE SET
-                {", ".join(f"{column} = EXCLUDED.{column}" for column in STOP_COLUMNS[2:])}
-        """, [row for schedule in schedules for row in schedule_stop_rows(schedule)])
+        self.cur.execute("CREATE TEMP TABLE new_stops (LIKE train_stops INCLUDING DEFAULTS) ON COMMIT DROP")
+        with self.cur.copy(f"COPY new_stops ({", ".join(STOP_COLUMNS)}) FROM STDIN") as copy:
+            for schedule in schedules:
+                for row in schedule_stop_rows(schedule):
+                    copy.write_row(row)
+        self.cur.execute(f"""
+            UPDATE new_stops n SET {", ".join(f"{column} = o.{column}" for column in LIVE_COLUMNS)}
+            FROM (
+                SELECT DISTINCT ON (rid, tiploc, working_arrival, working_departure, working_pass) *
+                FROM train_stops WHERE rid IN (SELECT DISTINCT rid FROM new_stops)
+                ORDER BY rid, tiploc, working_arrival, working_departure, working_pass, sequence
+            ) o
+            WHERE o.rid = n.rid AND o.tiploc = n.tiploc
+                AND o.working_arrival IS NOT DISTINCT FROM n.working_arrival
+                AND o.working_departure IS NOT DISTINCT FROM n.working_departure
+                AND o.working_pass IS NOT DISTINCT FROM n.working_pass
+        """)
+        self.cur.execute("DELETE FROM train_stops WHERE rid IN (SELECT DISTINCT rid FROM new_stops)")
+        self.cur.execute("INSERT INTO train_stops SELECT * FROM new_stops")
         self.conn.commit()
 
     def _upsert_journeys(self, schedules: list[Schedule]):
@@ -196,7 +343,10 @@ class Database:
 
     def handle_message(self, message: PushPortMessage) -> dict[str, int]:
         """Log a Push Port message and apply everything in it, in one transaction."""
-        counts = {"statuses": 0, "unmatched_locations": 0, "unknown_trains": 0, "schedules": 0, "deactivated": 0}
+        counts = {
+            "statuses": 0, "unmatched_locations": 0, "added_locations": 0, "unknown_trains": 0, "schedules": 0,
+            "deactivated": 0,
+        }
         try:
             self.record_event(message)
             for schedule in message.schedules:
@@ -208,7 +358,8 @@ class Database:
                     counts["unknown_trains"] += 1
                 else:
                     counts["statuses"] += 1
-                    counts["unmatched_locations"] += result
+                    counts["unmatched_locations"] += result.unmatched
+                    counts["added_locations"] += result.added
             for deactivated in message.deactivated:
                 self.cur.execute(
                     "UPDATE train_journeys SET deactivated = TRUE, updated_at = now() WHERE rid = %s",
@@ -262,22 +413,49 @@ class Database:
         ])
         self.refresh_position(schedule.rid)
 
-    def apply_status(self, status: TrainStatus) -> int | None:
+    def add_passing_point(self, rid: str, location: Location, stops: list[StopRow]) -> bool:
+        """Store a passing point Darwin reports but the schedule doesn't have, in working-time order."""
+        position = added_pass_position(location, stops)
+        if position is None:
+            return False
+        sequence, working_pass = position
+
+        self.ensure_tiplocs([location.tiploc])
+        # Shift later stops along one place, in two steps so the (rid, sequence) key never collides
+        self.cur.execute("UPDATE train_stops SET sequence = -sequence - 1 WHERE rid = %s AND sequence >= %s", (rid, sequence))
+        self.cur.execute("UPDATE train_stops SET sequence = -sequence WHERE rid = %s AND sequence < 0", (rid,))
+        self.cur.execute("""
+            INSERT INTO train_stops (rid, sequence, tiploc, location_type, working_pass, added_from_status)
+            VALUES (%s, %s, %s, 'PP', %s, TRUE)
+        """, (rid, sequence, location.tiploc, working_pass))
+        logger.debug("Added passing point %s at %s for %s", location.tiploc, location.working_pass, rid)
+        return True
+
+    def apply_status(self, status: TrainStatus) -> StatusResult | None:
         """
-        Apply a TS (train status) update. Returns the number of locations that couldn't be matched to a stop,
-        or None if the train isn't known at all (not in the timetable and no schedule message seen yet).
+        Apply a TS (train status) update, or return None if the train isn't known at all (not in the
+        timetable and no schedule message seen yet).
         """
         stops = self.fetch_stop_rows(status.rid)
         if not stops:
             logger.debug("Status for unknown train %s", status.rid)
             return None
 
+        result = StatusResult()
+        # Passing points missing from the schedule become stops first, so sequences are settled before matching.
+        # That includes a pass at a TIPLOC the schedule visits only at some quite different time (the other leg of
+        # a loop); one between two nearby visits stays unmatched rather than becoming a third
+        for location in status.locations:
+            if (location.is_pass() and is_unscheduled_visit(location, stops)
+                    and self.add_passing_point(status.rid, location, stops)):
+                result.added += 1
+                stops = self.fetch_stop_rows(status.rid)
+
         rows = []
-        unmatched = 0
         for location in status.locations:
             stop = match_location(location, stops)
             if stop is None:
-                unmatched += 1
+                result.unmatched += 1
                 logger.debug("No stop for %s at %s %s", status.rid, location.tiploc, location.planned_key())
                 continue
 
@@ -319,7 +497,7 @@ class Database:
             self.cur.execute("UPDATE train_journeys SET late_reason = %s WHERE rid = %s", (status.late_reason, status.rid))
 
         self.refresh_position(status.rid)
-        return unmatched
+        return result
 
     def refresh_position(self, rid: str):
         """Set the train's last reported location, report type and delay from its latest actual time."""
@@ -401,6 +579,266 @@ class Database:
             LIMIT %s
         """, (count,))
         return [JourneySummary(*row) for row in self.cur.fetchall()]
+
+    # Track geometry (track_model.py, segment_paths.py)
+
+    def replace_track_links(self, links: list):
+        self.cur.execute("TRUNCATE track_links")
+        with self.cur.copy("""
+            COPY track_links (asset_id, elr, track_id, start_miles, end_miles, from_node, to_node, length_m, geom)
+            FROM STDIN
+        """) as copy:
+            for link in links:
+                copy.write_row((
+                    link.asset_id, link.elr, link.track_id, link.start_miles, link.end_miles,
+                    link.from_node, link.to_node, link.length(), link.ewkt(),
+                ))
+        self.conn.commit()
+
+    def snap_tiploc_locations(self) -> bool:
+        """
+        Snap every TIPLOC to its nearest track link and set its quality from the distance.
+        Does nothing (returns False) until track_links has been loaded.
+        """
+        if not self.has_track_links():
+            return False
+        self.cur.execute("""
+            WITH points AS (
+                SELECT tiploc, source, COALESCE(
+                    ST_SetSRID(ST_MakePoint(easting, northing), 27700), ST_Transform(geom, 27700)
+                ) AS point
+                FROM tiploc_locations
+            ), nearest AS (
+                SELECT p.tiploc, p.source, p.point, link.asset_id, link.geom AS line
+                FROM points p
+                CROSS JOIN LATERAL (
+                    SELECT asset_id, geom FROM track_links ORDER BY geom <-> p.point LIMIT 1
+                ) link
+            )
+            UPDATE tiploc_locations t SET
+                snap_link = n.asset_id,
+                snap_along = ST_LineLocatePoint(n.line, n.point) * ST_Length(n.line),
+                snap_distance_m = ST_Distance(n.line, n.point),
+                snap_geom = ST_ClosestPoint(n.line, n.point),
+                quality = CASE
+                    WHEN n.source = 'override' OR ST_Distance(n.line, n.point) <= %(max_distance)s THEN 'good'
+                    WHEN n.source = 'naptan' THEN 'off_network'
+                    ELSE 'suspect'
+                END
+            FROM nearest n
+            WHERE t.tiploc = n.tiploc
+        """, {"max_distance": SNAP_DISTANCE_METRES})
+        self.conn.commit()
+        return True
+
+    def count_tiploc_locations(self) -> dict[tuple[str, str], int]:
+        """Rows in tiploc_locations by (source, quality)."""
+        self.cur.execute("SELECT source, quality, count(*) FROM tiploc_locations GROUP BY 1, 2")
+        return {(source, quality): count for source, quality, count in self.cur.fetchall()}
+
+    def flag_implausible_locations(self, day, max_speed: float, min_distance: float) -> list[str]:
+        """
+        Mark BPLAN points suspect where the day's trains would have to cover more than `min_distance`
+        metres at over `max_speed` m/s both to reach them and to leave them: a point in the wrong place
+        that happens to be near some other track. Repeats until nothing changes, so that a wrong point
+        next to another wrong one is found once the first is out. Drops their segment paths.
+        """
+        flagged: list[str] = []
+        while True:
+            self.cur.execute(f"""
+                WITH placed AS (
+                    SELECT s.rid, s.sequence, s.tiploc, t.source,
+                        COALESCE(ST_SetSRID(ST_MakePoint(t.easting, t.northing), 27700), ST_Transform(t.geom, 27700)) AS point,
+                        COALESCE(s.working_departure, s.working_arrival, s.working_pass) AS at
+                    FROM train_stops s
+                    JOIN train_journeys j ON j.rid = s.rid
+                    JOIN tiploc_locations t ON t.tiploc = s.tiploc
+                    WHERE j.scheduled_start = %(day)s AND {USABLE_LOCATION}
+                ), legs AS (
+                    SELECT tiploc, source,
+                        ST_Distance(point, LAG(point) OVER w) AS from_distance,
+                        EXTRACT(EPOCH FROM at - LAG(at) OVER w) AS from_seconds,
+                        ST_Distance(point, LEAD(point) OVER w) AS to_distance,
+                        EXTRACT(EPOCH FROM LEAD(at) OVER w - at) AS to_seconds
+                    FROM placed
+                    WINDOW w AS (PARTITION BY rid ORDER BY sequence)
+                )
+                SELECT tiploc FROM legs
+                WHERE source = 'bplan' AND from_distance IS NOT NULL AND to_distance IS NOT NULL
+                GROUP BY tiploc
+                HAVING avg((
+                    from_distance > %(min_distance)s AND from_distance / GREATEST(from_seconds, 30) > %(max_speed)s
+                    AND to_distance > %(min_distance)s AND to_distance / GREATEST(to_seconds, 30) > %(max_speed)s
+                )::INTEGER) > 0.5
+            """, {"day": day, "max_speed": max_speed, "min_distance": min_distance})
+            found = [row[0] for row in self.cur.fetchall()]
+            if not found:
+                break
+            self.cur.execute("UPDATE tiploc_locations SET quality = 'suspect' WHERE tiploc = ANY(%s)", (found,))
+            flagged += found
+        if flagged:
+            self.cur.execute(
+                "DELETE FROM segment_paths WHERE from_tiploc = ANY(%(t)s) OR to_tiploc = ANY(%(t)s)", {"t": flagged},
+            )
+        self.conn.commit()
+        return flagged
+
+    def has_track_links(self) -> bool:
+        self.cur.execute("SELECT EXISTS (SELECT FROM track_links)")
+        return self.cur.fetchone()[0]
+
+    def fetch_track_links(self) -> list[tuple]:
+        self.cur.execute("SELECT asset_id, from_node, to_node, ST_AsBinary(geom) FROM track_links")
+        return self.cur.fetchall()
+
+    def fetch_new_segment_pairs(self, day) -> list[tuple[str, str]]:
+        """Consecutive placed stops of trains scheduled on `day` that have no segment path yet."""
+        self.cur.execute(f"""
+            WITH placed AS (
+                SELECT s.rid, s.sequence, s.tiploc
+                FROM train_stops s
+                JOIN train_journeys j ON j.rid = s.rid
+                JOIN tiploc_locations t ON t.tiploc = s.tiploc
+                WHERE j.scheduled_start = %s AND {USABLE_LOCATION}
+            ), pairs AS (
+                SELECT tiploc AS from_tiploc, LEAD(tiploc) OVER (PARTITION BY rid ORDER BY sequence) AS to_tiploc
+                FROM placed
+            )
+            SELECT DISTINCT p.from_tiploc, p.to_tiploc FROM pairs p
+            WHERE p.to_tiploc IS NOT NULL AND p.to_tiploc <> p.from_tiploc
+                AND NOT EXISTS (
+                    SELECT FROM segment_paths sp WHERE sp.from_tiploc = p.from_tiploc AND sp.to_tiploc = p.to_tiploc
+                )
+            ORDER BY 1, 2
+        """, (day,))
+        return self.cur.fetchall()
+
+    def fetch_placed_tiplocs(self, tiplocs, parallel_metres: float) -> list[tuple]:
+        """
+        (tiploc, easting, northing, snaps) where snaps is a list of (asset_id, along): the nearest track
+        link first, then any others within `parallel_metres` of it (parallel lines). Empty for points
+        that aren't on Network Rail track.
+        """
+        self.cur.execute("""
+            WITH t AS (
+                SELECT tiploc, quality, snap_link, snap_geom,
+                    COALESCE(ST_SetSRID(ST_MakePoint(easting, northing), 27700), ST_Transform(geom, 27700)) AS point
+                FROM tiploc_locations WHERE tiploc = ANY(%s)
+            )
+            SELECT t.tiploc, ST_X(t.point), ST_Y(t.point), COALESCE(
+                array_agg(ARRAY[l.asset_id, (ST_LineLocatePoint(l.geom, t.point) * ST_Length(l.geom))::TEXT]
+                    ORDER BY l.asset_id <> t.snap_link, ST_Distance(l.geom, t.snap_geom))
+                    FILTER (WHERE l.asset_id IS NOT NULL),
+                '{}')
+            FROM t
+            LEFT JOIN track_links l ON t.quality = 'good' AND t.snap_link IS NOT NULL
+                AND ST_DWithin(l.geom, t.snap_geom, %s)
+            GROUP BY t.tiploc, t.point
+        """, (list(tiplocs), parallel_metres))
+        return [
+            (tiploc, x, y, [(asset_id, float(along)) for asset_id, along in snaps])
+            for tiploc, x, y, snaps in self.cur.fetchall()
+        ]
+
+    def add_segment_paths(self, paths: list, simplify_metres: float):
+        self.cur.executemany("""
+            INSERT INTO segment_paths (from_tiploc, to_tiploc, method, fallback_reason, length_m, straight_m, geom)
+            VALUES (%s, %s, %s, %s, %s, %s, ST_Transform(ST_GeomFromText(%s, 27700), 4326))
+            ON CONFLICT (from_tiploc, to_tiploc) DO UPDATE SET
+                method = EXCLUDED.method, fallback_reason = EXCLUDED.fallback_reason, length_m = EXCLUDED.length_m,
+                straight_m = EXCLUDED.straight_m, geom = EXCLUDED.geom, computed_at = now()
+        """, [(
+            path.from_tiploc, path.to_tiploc, path.method, path.fallback_reason, path.length, path.straight,
+            path.line.simplify(simplify_metres).wkt,
+        ) for path in paths])
+        self.conn.commit()
+
+    # Positions (positions.py)
+
+    def fetch_segment_paths(self) -> list[tuple]:
+        self.cur.execute("SELECT from_tiploc, to_tiploc, method, ST_AsBinary(geom) FROM segment_paths")
+        return self.cur.fetchall()
+
+    def fetch_journeys_around(self, at) -> list[tuple]:
+        """Journeys whose planned times run from up to 15 minutes after `at` to up to 3 hours before it."""
+        self.cur.execute("""
+            SELECT j.rid, j.train_id, j.toc_code, j.cancelled, j.deactivated
+            FROM train_journeys j
+            JOIN LATERAL (
+                SELECT min(COALESCE(working_departure, working_pass, working_arrival)) AS first_time,
+                    max(COALESCE(working_arrival, working_pass, working_departure)) AS last_time
+                FROM train_stops WHERE rid = j.rid
+            ) span ON TRUE
+            WHERE j.scheduled_start BETWEEN (%(at)s::timestamptz AT TIME ZONE 'Europe/London')::date - 1
+                    AND (%(at)s::timestamptz AT TIME ZONE 'Europe/London')::date
+                AND span.first_time <= %(at)s::timestamptz + INTERVAL '15 minutes'
+                AND span.last_time >= %(at)s::timestamptz - INTERVAL '3 hours'
+        """, {"at": at})
+        return self.cur.fetchall()
+
+    def fetch_position_stops(self, rids: list[str]) -> list[tuple]:
+        """Stops in order with their usable point (British National Grid) and every time positions need."""
+        self.cur.execute(f"""
+            SELECT s.rid, s.tiploc, s.location_type,
+                CASE WHEN {USABLE_LOCATION} THEN ST_X(p.point) END, CASE WHEN {USABLE_LOCATION} THEN ST_Y(p.point) END,
+                s.working_arrival, s.working_departure, s.working_pass,
+                s.estimated_arrival, s.estimated_departure, s.estimated_pass,
+                s.actual_arrival, s.actual_departure, s.actual_pass, s.cancelled
+            FROM train_stops s
+            LEFT JOIN tiploc_locations t ON t.tiploc = s.tiploc
+            LEFT JOIN LATERAL (
+                SELECT COALESCE(ST_SetSRID(ST_MakePoint(t.easting, t.northing), 27700), ST_Transform(t.geom, 27700)) AS point
+            ) p ON TRUE
+            WHERE s.rid = ANY(%s)
+            ORDER BY s.rid, s.sequence
+        """, (rids,))
+        return self.cur.fetchall()
+
+    # Coverage (coverage_report.py): which stops can be placed on the map
+
+    def fetch_coverage(self, day) -> dict[str, tuple[int, int]]:
+        """(placed, total) for the stops of trains scheduled on `day`, by kind of stop."""
+        self.cur.execute(f"""
+            WITH stops AS (
+                SELECT s.rid, s.sequence, s.location_type, ({USABLE_LOCATION}) AS placed,
+                    s.location_type IN {CALL_TYPES} AS is_call
+                FROM train_stops s
+                JOIN train_journeys j ON j.rid = s.rid
+                LEFT JOIN tiploc_locations t ON t.tiploc = s.tiploc
+                WHERE j.scheduled_start = %(day)s
+            ), segments AS (
+                SELECT placed AND LEAD(placed) OVER (PARTITION BY rid ORDER BY sequence) AS placed,
+                    LEAD(rid) OVER (PARTITION BY rid ORDER BY sequence) IS NOT NULL AS has_next
+                FROM stops WHERE is_call
+            )
+            SELECT 'passenger calls', count(*) FILTER (WHERE placed), count(*) FROM stops WHERE location_type IN ('OR', 'IP', 'DT')
+            UNION ALL SELECT 'all calls', count(*) FILTER (WHERE placed), count(*) FROM stops WHERE is_call
+            UNION ALL SELECT 'passing points', count(*) FILTER (WHERE placed), count(*) FROM stops WHERE location_type = 'PP'
+            UNION ALL SELECT 'all stops', count(*) FILTER (WHERE placed), count(*) FROM stops
+            UNION ALL SELECT 'call-to-call segments', count(*) FILTER (WHERE placed), count(*) FROM segments WHERE has_next
+        """, {"day": day})
+        return {row[0]: (row[1], row[2]) for row in self.cur.fetchall()}
+
+    def fetch_unplaced_tiplocs(self, day, limit: int) -> list[tuple]:
+        """
+        TIPLOCs that trains scheduled on `day` use but that can't be placed, busiest first:
+        (tiploc, name, reason, trains calling, trains passing).
+        """
+        self.cur.execute(f"""
+            SELECT s.tiploc, l.location_name,
+                CASE WHEN t.tiploc IS NULL THEN 'missing' ELSE t.quality END,
+                count(DISTINCT s.rid) FILTER (WHERE s.location_type IN {CALL_TYPES}),
+                count(DISTINCT s.rid) FILTER (WHERE s.location_type NOT IN {CALL_TYPES})
+            FROM train_stops s
+            JOIN train_journeys j ON j.rid = s.rid
+            LEFT JOIN tiploc_locations t ON t.tiploc = s.tiploc
+            LEFT JOIN locations l ON l.tiploc = s.tiploc
+            WHERE j.scheduled_start = %s AND NOT ({USABLE_LOCATION})
+            GROUP BY 1, 2, 3
+            ORDER BY count(DISTINCT s.rid) DESC, 1
+            LIMIT %s
+        """, (day, limit))
+        return self.cur.fetchall()
 
     def close(self):
         self.cur.close()
