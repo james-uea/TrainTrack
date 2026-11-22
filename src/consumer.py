@@ -9,12 +9,15 @@ import argparse
 import logging
 import socket
 import time
+from datetime import datetime
 
 from confluent_kafka import Consumer, KafkaException
 
+import retention
 from config import load_config
 from darwin import parse_message
 from db import Database
+from util import LONDON
 
 logger = logging.getLogger("consumer")
 
@@ -51,6 +54,8 @@ def main():
     consumer = build_consumer(config)
     consumer.subscribe([config.kafka_topic], on_assign=lambda _, partitions: logger.info("Assigned %s", partitions))
     db = Database(config.database_url)
+    # Today's event partition, in case the timetable service (which makes them daily) isn't running
+    retention.ensure_partitions(db, datetime.now(LONDON).date(), ahead=1)
     record = open(args.record, "ab") if args.record else None  # noqa: SIM115 (closed in finally)
 
     totals: dict[str, int] = {"messages": 0, "unparsed": 0}

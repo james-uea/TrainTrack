@@ -935,6 +935,26 @@ class Database:
         """, (day, limit))
         return self.cur.fetchall()
 
+    # Day partitions (retention.py)
+
+    def ensure_day_partition(self, parent: str, key_column: str, day) -> bool:
+        """Make `parent`'s partition for one UK day if it's missing. Returns whether it was made."""
+        self.cur.execute("SELECT ensure_day_partition(%s, %s, %s)", (parent, key_column, day))
+        return self.cur.fetchone()[0]
+
+    def fetch_day_partitions(self, parent: str) -> list[tuple[str, int]]:
+        """`parent`'s partitions and their (estimated) row counts, oldest first; the default partition is left out."""
+        self.cur.execute("""
+            SELECT c.relname, c.reltuples::BIGINT
+            FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
+            WHERE i.inhparent = to_regclass(%s) AND c.relname ~ '_[0-9]{8}$'
+            ORDER BY c.relname
+        """, (parent,))
+        return self.cur.fetchall()
+
+    def drop_partition(self, name: str):
+        self.cur.execute(sql.SQL("DROP TABLE {}").format(sql.Identifier(name)))
+
     def close(self):
         self.cur.close()
         self.conn.close()
