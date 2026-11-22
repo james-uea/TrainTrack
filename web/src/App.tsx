@@ -10,6 +10,7 @@ import { TrainMap } from "./map/TrainMap";
 import { TrainPanel } from "./panel/TrainPanel";
 import { Search } from "./search/Search";
 import { useUi } from "./state";
+import { Timeline } from "./timeline/Timeline";
 import { type LonLat, SegmentCache } from "./trains/segments";
 import { TrainStore } from "./trains/store";
 
@@ -54,6 +55,7 @@ export function App() {
         <Legend />
         <Search store={store} />
         <TrainPanel />
+        <Timeline />
       </Profiler>
     </FeedContext.Provider>
   );
