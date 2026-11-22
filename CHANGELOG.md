@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.7.0
+Milestone 3: the live map.
+
+### Added
+- `live.py`: keeps every train around the current moment in memory and estimates all positions on each tick, reloading only trains whose `updated_at` changed. Its clock runs live, frozen at a past moment (`fixed:`) or replaying the past (`replay:`); `--bench N` times N ticks
+- `api.py`: a FastAPI service with `GET /api/positions` (every placed train), `GET /api/trains/{rid}` (stops, times, platforms, reasons, route and position) and `GET /api/health`. Responses over 1 KB are gzipped. Runs as the `api` service in Compose on port 8000; `MAP_CLOCK` in `.env` sets its clock
+- `GET /api/stream`: positions as server-sent events, one per tick. The first is a `snapshot` of every train; after that each `changes` event lists only new or changed trains and those removed. `?since=<version>` (from `/api/positions`) or the browser's `Last-Event-ID` skips the snapshot
+- `web/`: the map's front end in TypeScript (Vite, React), built with pnpm. Its API types are generated from FastAPI's OpenAPI schema (`pnpm gen:api`, via `api_schema.py`); a test fails if `web/openapi.json` is out of date. The API serves the built page from `web/dist`, and the Docker image builds it in a Node stage
+- `GET /api/segments?pairs=FROM>TO`: the track path between pairs of stops, simplified, for drawing trains along it
+- The map page: every placed train on an OpenFreeMap basemap, coloured by delay, moving smoothly along the track between server ticks and shown as arrows pointing the way it's going from zoom 9. Hovering a train shows its headcode, operator and delay; a status bar shows the clock and how many trains are placed
+- `GET /tiles/track/{z}/{x}/{y}.pbf`: the Track Model's lines as vector tiles (zoom 5–14), built on request with PostGIS (`Database.fetch_track_tile`) and kept in memory. The map draws them under the trains
+- The train panel: click a train for its headcode, operator, origin and destination, how late it is and why, and its stations with planned, expected and actual times and platforms, marking where the train is now. Passing points and operational stops are behind a toggle. The train's route is drawn on the map, the selected train is ringed, and `?train=<rid>` in the address opens it directly
+- Each stop in `GET /api/trains/{rid}` says whether it's `public`: an origin, calling point or destination passengers can use, as opposed to an operational stop or a passing point
+- Search (press `/` or Ctrl/Cmd+K): stations by name or CRS code fly the map there; operators show only their trains (cleared from the legend); trains by headcode open in the panel
+- `GET /api/operators`: operators that run trains in the timetable, by code, for search
+- `?at=<ISO time>` on the map replays the past from that moment at 1x, whatever the API's own clock is. `GET /api/positions?at=` gives positions at any moment, from a second in-memory set of journeys kept for it
+- `GET /api/stations`: every station trains call at publicly, one per CRS code, with its location (`Database.fetch_stations`)
+- The legend's delay bands are switches that hide or show those trains, and "Late trains only" hides trains that are on time or haven't reported
+- `?bench=1` on the map measures 60 s of frames and React renders; `pnpm bench` runs it in headless Chrome, with `--throttle 4` to slow the CPU and `?renderer=geojson` to compare deck.gl with a MapLibre GeoJSON source
+- Dependencies: `fastapi`, `uvicorn[standard]`; `httpx2` for tests. Front end: React, MapLibre GL (`react-map-gl`), deck.gl (with `@deck.gl/extensions`), TanStack Query, Zustand, `openapi-fetch`, `cmdk`, `cheap-ruler`; Vite, TypeScript 6, Vitest, Biome, `openapi-typescript`, Playwright
+- `pnpm test:e2e`: a Playwright smoke test that starts its own API on a replay clock and Vite, waits for trains to be placed and the clock to move, finds a train with search and opens its panel, and fails on any console error
+- The map page has a favicon
+
+### Changed
+- A train is held short of a call that hasn't reported only if it's at least 3 minutes late (`positions.HOLD_MIN_DELAY`); an on-time train runs on through, since it has most likely called and the report is late. Held trains more than 1 km from where they turned out to be fell from 13 to 2 on 21 Nov 14:05–14:51
+- `accuracy_check.py --hold-min-delay` compares settings
+- The README covers PostGIS, the Track Model and locations, the API and the map
+- Positions carry `left` and `due`: when the train left the stop it's coming from and is expected at the next, so a client can work out its progress itself
+- Every applied train status update now sets `train_journeys.updated_at`, not only one with a new actual time, so forecast changes can be picked up
+
+### Fixed
+- Seven junctions and tunnel ends now have overrides in `reference/tiploc_overrides.csv`: Leeds West Jn, Portobello Jn (Paddington), Glasgow Central Bridge St Jn, Surrey Quays Jn and Waterloo West Crossings had no usable BPLAN point, and BPLAN put both Severn Tunnel portals near Severn Tunnel Junction, so trains between Pilning and the tunnel zigzagged and were drawn up to 11 km short
+
 ## 0.6.0
 Milestone 2: train positions on the real track.
 

@@ -15,6 +15,7 @@ from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from itertools import pairwise
 
 import shapely
 from pyproj import Geod, Transformer
@@ -39,6 +40,10 @@ OLD_REPORT = timedelta(minutes=15)
 # needs no list of which calls report, which would go stale. On the 21 Nov replay 3 minutes gave fewer estimates
 # over 1 km out than 5, 10 or no limit (docs/spikes/milestone2-data-spike.md)
 HOLD_LIMIT = timedelta(minutes=3)
+# ...and only if it was at least this late at its last report (minutes; None holds any train). An on-time train
+# that doesn't report at a call has most likely gone through a call that never reports. On the 21 Nov 14:05-14:51
+# check, 3 cut held estimates over 1 km out from 13 to 2 and p95 error from 1,964 to 1,962 m; 5 was no better
+HOLD_MIN_DELAY: int | None = 3
 # How far ahead along the path to look for the bearing (metres)
 BEARING_LOOKAHEAD = 25.0
 
@@ -98,6 +103,8 @@ class Position:
     fraction: float  # along from_tiploc -> to_tiploc
     delay_minutes: int | None  # at the last report; None with no reports yet
     last_report_age_s: float | None
+    left: datetime | None = None  # when it left from_tiploc, while running or held
+    due: datetime | None = None  # when it's expected at to_tiploc, while running or held
 
 
 # A source of track paths: (from_tiploc, to_tiploc) -> (line in British National Grid, method), or None
@@ -241,24 +248,49 @@ def estimate_position(journey: Journey, at: datetime, paths: PathSource) -> Posi
         there = placed[k + 1]
         due = timeline.arrival(there)
         if due is not None and at >= due:
-            if (there == limit and at < due + HOLD_LIMIT
+            late_enough = HOLD_MIN_DELAY is None or (delay is not None and delay >= HOLD_MIN_DELAY)
+            if (there == limit and at < due + HOLD_LIMIT and late_enough
                     and not timeline._seen(stops[there].actual_arrival or stops[there].actual_pass)):
-                return _running(stops, here, there, 1.0, "held", paths, confidence, delay, age)
+                return _running(stops, here, there, 1.0, "held", paths, confidence, delay, age, leaves or arrived, due)
             continue
 
         left = leaves or arrived or at
         span = (due - left).total_seconds() if due else 0
         fraction = min(max((at - left).total_seconds() / span, 0.0), 1.0) if span > 0 else 1.0
-        return _running(stops, here, there, fraction, "running", paths, confidence, delay, age)
+        return _running(stops, here, there, fraction, "running", paths, confidence, delay, age, left, due)
     return None
 
 
-def _running(stops, here, there, fraction, state, paths, confidence, delay, age) -> Position:
+def route(journey: Journey, paths: PathSource) -> list[tuple[float, float]]:
+    """The train's whole route as (lon, lat) points: the paths between its placed stops, joined end to end."""
+    placed = [stop for stop in journey.stops if stop.point is not None and not stop.cancelled]
+    points: list[tuple[float, float]] = []
+    for start, end in pairwise(placed):
+        line, _ = _path(start, end, paths)
+        coords = list(line.coords)
+        points.extend(coords[1:] if points else coords)
+    if len(placed) == 1:
+        points = [placed[0].point]
+    if not points:
+        return []
+    lons, lats = TO_WGS84.transform([x for x, _ in points], [y for _, y in points])
+    return list(zip(lons, lats, strict=True))
+
+
+def segment_line(start: Stop, end: Stop, paths: PathSource, tolerance: float = 5.0) -> list[tuple[float, float]]:
+    """The path a train follows from `start` to `end` as (lon, lat) points, simplified to within `tolerance` metres."""
+    line, _ = _path(start, end, paths)
+    line = line.simplify(tolerance)
+    lons, lats = TO_WGS84.transform(*zip(*line.coords, strict=True))
+    return [(round(lon, 6), round(lat, 6)) for lon, lat in zip(lons, lats, strict=True)]
+
+
+def _running(stops, here, there, fraction, state, paths, confidence, delay, age, left, due) -> Position:
     line, method = _path(stops[here], stops[there], paths)
     (x, y), bearing = _point_on(line, fraction)
     lon, lat = TO_WGS84.transform(x, y)
     return Position(lat, lon, bearing, state, confidence(method, there - here - 1), stops[here].tiploc,
-                    stops[there].tiploc, fraction, delay, age.total_seconds() if age else None)
+                    stops[there].tiploc, fraction, delay, age.total_seconds() if age else None, left, due)
 
 
 def _path(start: Stop, end: Stop, paths: PathSource) -> tuple[LineString, str]:

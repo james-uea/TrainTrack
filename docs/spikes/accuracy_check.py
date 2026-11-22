@@ -53,7 +53,10 @@ def main():
     parser.add_argument("--start", type=datetime.fromisoformat, required=True)
     parser.add_argument("--end", type=datetime.fromisoformat, required=True)
     parser.add_argument("--hold-minutes", type=float, help="override positions.HOLD_LIMIT, to compare settings")
+    parser.add_argument("--hold-min-delay", type=int, help="override positions.HOLD_MIN_DELAY (-1 for none)")
     args = parser.parse_args()
+    if args.hold_min_delay is not None:
+        positions.HOLD_MIN_DELAY = None if args.hold_min_delay < 0 else args.hold_min_delay
     if args.hold_minutes is not None:
         positions.HOLD_LIMIT = timedelta(minutes=args.hold_minutes)
 

@@ -6,7 +6,7 @@ import pytest
 from shapely import to_wkb
 from shapely.geometry import LineString
 
-from positions import Journey, PathCache, Stop, estimate_position, service_status
+from positions import Journey, PathCache, Stop, estimate_position, route, service_status
 from tiploc_locations import to_wgs84
 from util import LONDON
 
@@ -99,20 +99,26 @@ def test_dwelling_at_a_call():
     assert position.bearing == pytest.approx(2.4, abs=0.5)  # facing north, towards CCC
 
 
-def test_held_short_of_a_call_with_no_report_yet():
-    train = simple(AAA={"actual_departure": t("10:00")})
-    position = estimate_position(train, t("10:12"), paths)  # due at BBB 10:10
+def test_a_late_train_is_held_short_of_a_call_with_no_report_yet():
+    train = simple(AAA={"actual_departure": t("10:04")})  # 4 late, so due at BBB 10:14
+    position = estimate_position(train, t("10:16"), paths)
     assert (position.state, position.from_tiploc, position.to_tiploc, position.fraction) == ("held", "AAA", "BBB", 1.0)
     assert (position.lat, position.lon) == lat_lon(*POINTS["BBB"])
     assert position.confidence == "medium"  # 12 minutes since the last report
 
 
-def test_a_call_that_never_reports_holds_the_train_only_briefly():
-    # Like 2H62 at Kinbrace: a request stop with no report, so the train shouldn't be pinned there until Brora
+def test_an_on_time_train_runs_on_through_a_call_that_hasnt_reported():
     train = simple(AAA={"actual_departure": t("10:00")})
-    position = estimate_position(train, t("10:16"), paths)  # 6 minutes after it was due at BBB, past HOLD_LIMIT
+    position = estimate_position(train, t("10:12"), paths)  # due at BBB 10:10, most likely gone through
     assert (position.state, position.from_tiploc, position.to_tiploc) == ("running", "BBB", "CCC")
-    assert position.fraction == pytest.approx(5 / 9)  # on the timetable: left BBB 10:11, due at CCC 10:20
+
+
+def test_a_call_that_never_reports_holds_a_late_train_only_briefly():
+    # Like 2H62 at Kinbrace: a request stop with no report, so the train shouldn't be pinned there until Brora
+    train = simple(AAA={"actual_departure": t("10:04")})  # 4 late: due at BBB 10:14, leaves 10:15, at CCC 10:24
+    position = estimate_position(train, t("10:20"), paths)  # 6 minutes after it was due at BBB, past HOLD_LIMIT
+    assert (position.state, position.from_tiploc, position.to_tiploc) == ("running", "BBB", "CCC")
+    assert position.fraction == pytest.approx(5 / 9)
     assert position.confidence == "low"  # 16 minutes since the last report
 
 
@@ -197,3 +203,19 @@ def test_back_the_way_it_came_after_reversing():
     assert (position.state, position.from_tiploc, position.to_tiploc, position.fraction) == ("running", "BBB", "AAA", 0.5)
     assert (position.lat, position.lon) == lat_lon(X + 3000, Y)
     assert position.bearing == pytest.approx(272.4, abs=1)  # heading west, back towards AAA
+
+
+def test_route_joins_the_paths_between_placed_stops():
+    train = journey(stop("AAA", "OR"), stop("PPP", "PP", placed=False), stop("BBB", "IP"), stop("CCC", "DT"))
+    points = route(train, paths)
+    assert len(points) == 3  # AAA, BBB (shared by both paths, once), CCC
+    assert (points[0][1], points[0][0]) == lat_lon(*POINTS["AAA"])
+    assert (points[-1][1], points[-1][0]) == lat_lon(*POINTS["CCC"])
+
+
+def test_a_running_train_says_when_it_left_and_is_due():
+    train = simple(AAA={"actual_departure": t("10:00")})
+    position = estimate_position(train, t("10:02"), paths)
+    assert position.state == "running"
+    assert (position.left, position.due) == (t("10:00"), t("10:10"))
+    assert position.fraction == pytest.approx((t("10:02") - position.left) / (position.due - position.left))

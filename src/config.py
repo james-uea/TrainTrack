@@ -16,6 +16,7 @@ class Config:
     kafka_topic: str
     data_dir: str
     log_level: str
+    map_clock: str
 
 
 def load_config(path: str = ".env") -> Config:
@@ -35,4 +36,5 @@ def load_config(path: str = ".env") -> Config:
         kafka_topic=values.get("KAFKA_TOPIC") or DEFAULT_TOPIC,
         data_dir=values.get("DATA_DIR") or "data",
         log_level=values.get("LOG_LEVEL") or "INFO",
+        map_clock=values.get("MAP_CLOCK") or "now",
     )

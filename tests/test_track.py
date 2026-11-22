@@ -188,3 +188,51 @@ def test_a_bplan_point_too_far_from_its_neighbours_is_suspect(db):
     assert db.cur.fetchone() == ("suspect",)
     db.cur.execute("SELECT from_tiploc, to_tiploc FROM segment_paths")
     assert db.cur.fetchall() == [("AAA", "BBB")]
+
+
+
+def tile_containing(lon: float, lat: float, z: int) -> tuple[int, int, int]:
+    import math
+    n = 2**z
+    return z, int((lon + 180) / 360 * n), int((1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * n)
+
+
+def test_track_tiles_hold_the_track_they_cover_and_leave_out_links_shorter_than_a_pixel(db):
+    lon, lat = to_wgs84(X + 1000, Y)
+    at_8, at_14 = tile_containing(lon, lat, 8), tile_containing(lon, lat, 14)
+
+    db.replace_track_links(assign_nodes([track_link("main", (0, 0), (2000, 0))]))
+    main_only = db.fetch_track_tile(*at_8), db.fetch_track_tile(*at_14)
+    assert all(main_only)
+    assert db.fetch_track_tile(*tile_containing(lon + 1, lat, 14)) == b""  # nothing there
+
+    # A 5 m spur is under a pixel at zoom 8 (~23 m) but not at zoom 14 (~0.4 m)
+    db.replace_track_links(assign_nodes([track_link("main", (0, 0), (2000, 0)), track_link("spur", (1000, 0), (1000, 5))]))
+    assert db.fetch_track_tile(*at_8) == main_only[0]
+    assert db.fetch_track_tile(*at_14) != main_only[1]
+
+
+def test_stations_are_places_trains_call_at_one_per_crs_at_their_naptan_point(db):
+    db.add_location_refs([
+        ("AAA", {"locname": "Aston", "crs": "AST"}),  # Aston's platforms are two TIPLOCs
+        ("ZZA", {"locname": "Aston", "crs": "AST"}),
+        ("BBB", {"locname": "Bridge Junction", "crs": "BRJ"}),  # trains only pass it
+        ("CCC", {"locname": "Coach Stop", "crs": "XXX"}),
+        ("DDD", {"locname": "Depot"}),
+    ])
+    db.add_tiploc_locations([
+        located("AAA", 0, 0, "bplan"), located("ZZA", 50, 0, "naptan"), located("BBB", 1000, 0, "naptan"),
+        located("CCC", 2000, 0, "naptan"), located("DDD", 3000, 0, "naptan"),
+    ])
+    db.add_schedules([parse_schedule({
+        "rid": "202611218000006", "uid": "W00006", "trainId": "2T03", "ssd": "2026-11-21", "toc": "LE",
+        "OR": {"tpl": "AAA", "ptd": "10:00", "wtd": "10:00"},
+        "IP": [{"tpl": "ZZA", "pta": "10:01", "ptd": "10:01", "wta": "10:01", "wtd": "10:01"},
+               {"tpl": "CCC", "pta": "10:05", "ptd": "10:05", "wta": "10:05", "wtd": "10:05"}],
+        "PP": {"tpl": "BBB", "wtp": "10:03"},
+        "DT": {"tpl": "DDD", "pta": "10:10", "wta": "10:10"},
+    })])
+
+    stations = db.fetch_stations()
+    assert [(crs, name) for crs, name, _, _ in stations] == [("AST", "Aston")]
+    assert stations[0][2:] == pytest.approx(to_wgs84(X + 50, Y))  # the NaPTAN platform, not BPLAN's

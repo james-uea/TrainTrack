@@ -493,8 +493,12 @@ class Database:
                 WHERE rid = %s AND sequence = %s
             """, rows)
 
-        if status.late_reason is not None:
-            self.cur.execute("UPDATE train_journeys SET late_reason = %s WHERE rid = %s", (status.late_reason, status.rid))
+        if rows or status.late_reason is not None:
+            # Forecasts and platforms change positions and the train panel too, not only new actual times
+            self.cur.execute(
+                "UPDATE train_journeys SET late_reason = COALESCE(%s, late_reason), updated_at = now() WHERE rid = %s",
+                (status.late_reason, status.rid),
+            )
 
         self.refresh_position(status.rid)
         return result
@@ -759,8 +763,11 @@ class Database:
         self.cur.execute("SELECT from_tiploc, to_tiploc, method, ST_AsBinary(geom) FROM segment_paths")
         return self.cur.fetchall()
 
-    def fetch_journeys_around(self, at) -> list[tuple]:
-        """Journeys whose planned times run from up to 15 minutes after `at` to up to 3 hours before it."""
+    def fetch_journeys_around(self, at, rids: list[str] | None = None) -> list[tuple]:
+        """
+        Journeys whose planned times run from up to 15 minutes after `at` to up to 3 hours before it, optionally
+        only among `rids`.
+        """
         self.cur.execute("""
             SELECT j.rid, j.train_id, j.toc_code, j.cancelled, j.deactivated
             FROM train_journeys j
@@ -773,8 +780,18 @@ class Database:
                     AND (%(at)s::timestamptz AT TIME ZONE 'Europe/London')::date
                 AND span.first_time <= %(at)s::timestamptz + INTERVAL '15 minutes'
                 AND span.last_time >= %(at)s::timestamptz - INTERVAL '3 hours'
-        """, {"at": at})
+                AND (%(rids)s::text[] IS NULL OR j.rid = ANY(%(rids)s::text[]))
+        """, {"at": at, "rids": rids})
         return self.cur.fetchall()
+
+    def fetch_changed_journeys(self, since) -> tuple[datetime, list[str]]:
+        """The database's time now, and the trains changed after `since` (all of them when `since` is None)."""
+        self.cur.execute("SELECT clock_timestamp()")
+        now = self.cur.fetchone()[0]
+        if since is None:
+            return now, []
+        self.cur.execute("SELECT rid FROM train_journeys WHERE updated_at > %s", (since,))
+        return now, [row[0] for row in self.cur.fetchall()]
 
     def fetch_position_stops(self, rids: list[str]) -> list[tuple]:
         """Stops in order with their usable point (British National Grid) and every time positions need."""
@@ -793,6 +810,84 @@ class Database:
             ORDER BY s.rid, s.sequence
         """, (rids,))
         return self.cur.fetchall()
+
+    # The live map (api.py)
+
+    def fetch_train(self, rid: str) -> tuple | None:
+        """(rid, headcode, toc, operator, cancelled, deactivated, cancel reason, late reason, delay) for one train."""
+        self.cur.execute("""
+            SELECT j.rid, j.train_id, j.toc_code, toc.name, COALESCE(j.cancelled, FALSE), j.deactivated,
+                cr.reason, lr.reason, j.delay_minutes
+            FROM train_journeys j
+            LEFT JOIN train_operator_codes toc ON toc.toc = j.toc_code
+            LEFT JOIN cancellation_reasons cr ON cr.code = j.cancel_reason
+            LEFT JOIN late_reasons lr ON lr.code = j.late_reason
+            WHERE j.rid = %s
+        """, (rid,))
+        return self.cur.fetchone()
+
+    def fetch_panel_stops(self, rid: str) -> list[tuple]:
+        """A train's stops in order, with names and every time and platform field the train panel shows."""
+        self.cur.execute("""
+            SELECT s.tiploc, l.location_name, l.reservation_code, s.location_type,
+                s.public_arrival, s.public_departure, s.working_arrival, s.working_departure, s.working_pass,
+                s.estimated_arrival, s.estimated_departure, s.estimated_pass,
+                s.actual_arrival, s.actual_departure, s.actual_pass,
+                s.platform, COALESCE(s.platform_confirmed, FALSE), COALESCE(s.platform_suppressed, FALSE), s.cancelled
+            FROM train_stops s
+            LEFT JOIN locations l ON l.tiploc = s.tiploc
+            WHERE s.rid = %s
+            ORDER BY s.sequence
+        """, (rid,))
+        return self.cur.fetchall()
+
+    def fetch_last_write(self) -> datetime | None:
+        """When the consumer (or a timetable load) last changed any train."""
+        self.cur.execute("SELECT max(updated_at) FROM train_journeys")
+        return self.cur.fetchone()[0]
+
+    def fetch_stations(self) -> list[tuple[str, str, float, float]]:
+        """
+        (crs, name, lon, lat) for every station trains call at publicly, one per CRS code. A station with several
+        TIPLOCs (platform groups, low-level platforms) is placed at its NaPTAN point where there is one.
+        """
+        self.cur.execute("""
+            WITH called AS (SELECT DISTINCT tiploc FROM train_stops WHERE location_type IN ('OR', 'IP', 'DT'))
+            SELECT DISTINCT ON (l.reservation_code) l.reservation_code, l.location_name, ST_X(t.geom), ST_Y(t.geom)
+            FROM locations l
+            JOIN called c ON c.tiploc = l.tiploc
+            JOIN tiploc_locations t ON t.tiploc = l.tiploc
+            WHERE l.reservation_code IS NOT NULL AND l.reservation_code <> 'XXX' AND t.quality <> 'suspect'
+            ORDER BY l.reservation_code, (t.source = 'naptan') DESC, l.tiploc
+        """)
+        return self.cur.fetchall()
+
+    def fetch_operators(self) -> list[tuple[str, str]]:
+        """(code, name) for every operator with a known name that runs trains in the timetable."""
+        self.cur.execute("""
+            SELECT o.toc, o.name FROM train_operator_codes o
+            WHERE o.name IS NOT NULL AND EXISTS (SELECT 1 FROM train_journeys j WHERE j.toc_code = o.toc)
+            ORDER BY o.name
+        """)
+        return self.cur.fetchall()
+
+    def fetch_track_tile(self, z: int, x: int, y: int) -> bytes:
+        """
+        A Mapbox Vector Tile of the Track Model's centrelines in web mercator tile z/x/y, one layer named `track`.
+        Lines are simplified to about a pixel in British National Grid before they're transformed, and links shorter
+        than that are left out, which keeps a whole-country tile near 100 ms.
+        """
+        pixel = 40075016.686 / 2**z / 4096 * 0.6  # metres per tile pixel, allowing for BNG's scale at UK latitudes
+        self.cur.execute("""
+            WITH bounds AS (SELECT ST_TileEnvelope(%(z)s, %(x)s, %(y)s) AS env),
+            tile AS (
+                SELECT ST_AsMVTGeom(ST_Transform(ST_Simplify(t.geom, %(pixel)s), 3857), b.env, 4096, 64, true) AS geom
+                FROM track_links t, bounds b
+                WHERE t.geom && ST_Transform(ST_Expand(b.env, %(buffer)s), 27700) AND t.length_m >= %(pixel)s
+            )
+            SELECT ST_AsMVT(tile, 'track', 4096, 'geom') FROM tile WHERE geom IS NOT NULL
+        """, {"z": z, "x": x, "y": y, "pixel": pixel, "buffer": 40075016.686 / 2**z * 64 / 4096})
+        return bytes(self.cur.fetchone()[0])
 
     # Coverage (coverage_report.py): which stops can be placed on the map
 
