@@ -36,7 +36,8 @@ class Partitioned:
 
 
 EVENTS = Partitioned("darwin_events", "received_at", archive=True)
-TABLES = (EVENTS,)
+FRAMES = Partitioned("position_frames", "at", archive=False)
+TABLES = (EVENTS, FRAMES)
 
 
 def partition_day(name: str) -> date:
@@ -114,7 +115,7 @@ def expire(db: Database, table: Partitioned, keep_days: int, today: date, archiv
 
 def run(db: Database, config: Config, today: date | None = None, dry_run: bool = False) -> dict[str, list[str]]:
     today = today or datetime.now(LONDON).date()
-    keep = {EVENTS.table: config.events_keep_days}
+    keep = {EVENTS.table: config.events_keep_days, FRAMES.table: config.frames_keep_days}
     result = {"made": [] if dry_run else ensure_partitions(db, today), "expired": []}
     for table in TABLES:
         result["expired"] += expire(db, table, keep[table.table], today, config.archive_dir, dry_run)

@@ -51,6 +51,17 @@ services:
     depends_on:
       - db
 
+  # Records what the map shows every 5 s, so any moment can be replayed
+  recorder:
+    build: .
+    restart: unless-stopped
+    command: python src/recorder.py
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASS}@db:5432/${POSTGRES_DB}
+    depends_on:
+      - consumer
+
   # Loads the timetable on start, then again every day after the new files arrive (~04:00), then runs retention.py
   timetable:
     build: .
