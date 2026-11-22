@@ -995,6 +995,15 @@ class Database:
         """, {"start": start, "end": end, "gap": gap})
         return self.cur.fetchall()
 
+    def fetch_frame_days(self) -> list[tuple]:
+        """UK days with frames: (day, recorded frames, computed frames), oldest first."""
+        self.cur.execute("""
+            SELECT (at AT TIME ZONE 'Europe/London')::DATE AS day,
+                count(*) FILTER (WHERE source = 'recorded'), count(*) FILTER (WHERE source = 'computed')
+            FROM position_frames GROUP BY 1 ORDER BY 1
+        """)
+        return self.cur.fetchall()
+
     # Day partitions (retention.py)
 
     def ensure_day_partition(self, parent: str, key_column: str, day) -> bool:

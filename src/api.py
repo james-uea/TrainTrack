@@ -15,7 +15,7 @@ import tomllib
 from collections import OrderedDict
 from collections.abc import AsyncIterable
 from contextlib import asynccontextmanager, suppress
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -29,9 +29,18 @@ from pydantic import BaseModel
 
 from config import load_config
 from db import Database
-from frames import changes_dict, position_dict, snapshot_dict, to_json
+from frames import (
+    advance,
+    changes_dict,
+    position_dict,
+    rebuild,
+    snapshot_dict,
+    to_json,
+    unpack,
+)
 from live import TICK, Clock, LivePositions, Snapshot, SteppedClock
 from positions import Position, route
+from util import LONDON
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +131,38 @@ class PositionChanges(BaseModel):
     removed: list[str]  # rids no longer shown
 
 
+Source = Literal["recorded", "computed"]
+
+
+class ReplayFrame(BaseModel):
+    """One stored tick. A keyframe lists every placed train; otherwise only those that changed since the frame
+    before, and the rids removed."""
+    at: datetime
+    keyframe: bool
+    source: Source  # recorded live, or computed afterwards from the database (later forecasts may show through)
+    active: int
+    trains: list[TrainPosition]
+    removed: list[str]
+
+
+class ReplayResponse(BaseModel):
+    start: datetime
+    end: datetime
+    frames: list[ReplayFrame]  # oldest first; the first is a keyframe. Empty when nothing was stored
+
+
+class ReplayRun(BaseModel):
+    start: datetime
+    end: datetime
+    source: Source
+
+
+class ReplayDay(BaseModel):
+    day: str  # UK date, YYYY-MM-DD
+    recorded_minutes: float
+    computed_minutes: float
+
+
 class Health(BaseModel):
     clock: str
     at: datetime | None
@@ -134,6 +175,10 @@ class Health(BaseModel):
 
 VERSION = tomllib.loads((Path(__file__).parent.parent / "pyproject.toml").read_text())["project"]["version"]
 MAX_SEGMENTS = 500  # per request
+MAX_REPLAY = timedelta(minutes=15)  # longest window /api/replay returns at once
+# Frames further apart than this leave a gap: the moments between aren't covered
+FRAME_GAP = timedelta(seconds=30)
+REPLAY_DAYS_REFRESH = 60.0  # seconds
 # Track tiles exist from the zoom the whole network first reads as lines down to the zoom MapLibre overzooms from
 TRACK_ZOOMS = range(5, 15)
 STATIONS_REFRESH = 3600.0  # seconds; stations change only with the timetable
@@ -184,6 +229,7 @@ class MapService:
         self._segments: dict[str, list[tuple[float, float]]] = {}
         self._track_tiles: OrderedDict[tuple[int, int, int], bytes] = OrderedDict()
         self._stations: tuple[float, list[Station]] | None = None  # (loaded at, stations)
+        self._replay_days: tuple[float, list[ReplayDay]] | None = None
 
     def tick(self):
         snapshot = self.live.tick()
@@ -228,7 +274,9 @@ class MapService:
             finally:
                 self._db.conn.rollback()
 
-    def train(self, rid: str) -> TrainDetail | None:
+    def train(self, rid: str, at: datetime | None = None) -> TrainDetail | None:
+        """One train's details. With `at`, as they stood then: later actual times are left out, and the position
+        is the one the map showed."""
         row = self.query("fetch_train", rid)
         if row is None:
             return None
@@ -238,6 +286,24 @@ class MapService:
 
         journey = self.live.journey(rid)
         position = self.positions.get(rid)
+        if at is not None:
+            for stop in stops:
+                for name in ("actual_arrival", "actual_departure", "actual_pass"):
+                    if (value := getattr(stop, name)) is not None and value > at:
+                        setattr(stop, name, None)
+            snapshot = self.stored_positions(at) or self.computed_positions(at)
+            stored = next((train for train in snapshot["trains"] if train["rid"] == rid), None)
+            with self._replay_lock:
+                replay_live = self._replay_live()
+                journey = journey or replay_live.journey(rid)
+                paths = replay_live.paths
+            return TrainDetail(
+                rid=rid, headcode=headcode, toc=toc, operator=operator, cancelled=cancelled,
+                cancel_reason=cancel_reason, late_reason=late_reason, delay=stored["delay"] if stored else None,
+                origin=calls[0].name if calls else None, destination=calls[-1].name if calls else None,
+                stops=stops, route=route(journey, paths) if journey is not None and paths else [],
+                position=TrainPosition(**stored) if stored else None,
+            )
         return TrainDetail(
             rid=rid, headcode=headcode, toc=toc, operator=operator, cancelled=cancelled,
             cancel_reason=cancel_reason, late_reason=late_reason, delay=delay,
@@ -259,15 +325,63 @@ class MapService:
         return found
 
     def positions_at(self, at: datetime) -> bytes:
-        """Every placed train at `at`, shaped like /api/positions, for a page looking at the past."""
+        """
+        Every placed train at `at`, shaped like /api/positions, for a page looking at the past: rebuilt from stored
+        frames where they cover the moment, otherwise computed from the database as it is now.
+        """
+        if (snapshot := self.stored_positions(at)) is not None:
+            return to_json(snapshot)
+        return to_json(self.computed_positions(at))
+
+    def stored_positions(self, at: datetime) -> dict | None:
+        rows = self.query("fetch_frames", at, at)
+        if not rows or at - rows[-1][0] > FRAME_GAP:
+            return None
+        rebuilt = rebuild([unpack(data) for _, _, _, data in rows])
+        rebuilt.update(version=0, clock=f"replay:{at.isoformat()}")
         with self._replay_lock:
-            if self._replay is None:
-                clock = SteppedClock(at)
-                self._replay = (clock, LivePositions(Database(self.database_url), clock))
-            clock, live = self._replay
-            clock.start = at
+            segment = self._replay_live().segment
+            return advance(rebuilt, at, segment)
+
+    def computed_positions(self, at: datetime) -> dict:
+        with self._replay_lock:
+            live = self._replay_live()
+            live.clock.start = at
             snapshot = live.tick()
-        return to_json(snapshot_dict(snapshot, Clock(at), 0))
+        return snapshot_dict(snapshot, Clock(at), 0)
+
+    def _replay_live(self) -> LivePositions:
+        """Positions for moments pages ask for (?at=), separate from the service's own clock. Hold _replay_lock."""
+        if self._replay is None:
+            clock = SteppedClock(datetime.now(UTC))
+            self._replay = (clock, LivePositions(Database(self.database_url), clock))
+        live = self._replay[1]
+        if live.paths is None:
+            live.tick()  # loads the track paths segments are cut from
+        return live
+
+    def replay(self, start: datetime, end: datetime) -> bytes:
+        """The stored frames that rebuild every moment from `start` to `end` (see /api/replay)."""
+        frames = []
+        for at, keyframe, source, data in self.query("fetch_frames", start, end):
+            frame = unpack(data)
+            frames.append({"at": at.isoformat(), "keyframe": keyframe, "source": source, "active": frame["active"],
+                           "trains": frame["trains"], "removed": frame.get("removed", [])})
+        return to_json({"start": start.isoformat(), "end": end.isoformat(), "frames": frames})
+
+    def replay_runs(self, day: date) -> list[ReplayRun]:
+        start = datetime.combine(day, datetime.min.time(), LONDON)
+        end = datetime.combine(day + timedelta(days=1), datetime.min.time(), LONDON)
+        return [ReplayRun(start=first, end=last, source=source)
+                for first, last, source, _ in self.query("fetch_frame_runs", start, end, FRAME_GAP)]
+
+    def replay_days(self) -> list[ReplayDay]:
+        if self._replay_days is None or time.monotonic() - self._replay_days[0] > REPLAY_DAYS_REFRESH:
+            days = [ReplayDay(day=day.isoformat(), recorded_minutes=round(recorded / 12, 1),
+                              computed_minutes=round(computed / 12, 1))
+                    for day, recorded, computed in self.query("fetch_frame_days")]
+            self._replay_days = (time.monotonic(), days)
+        return self._replay_days[1]
 
     def stations(self) -> list[Station]:
         if self._stations is None or time.monotonic() - self._stations[0] > STATIONS_REFRESH:
@@ -299,6 +413,11 @@ class MapService:
     def close(self):
         self.live.db.close()
         self._db.close()
+
+
+def utc(at: datetime) -> datetime:
+    """A time from a query string; one without a zone is read as UTC."""
+    return at if at.tzinfo else at.replace(tzinfo=UTC)
 
 
 def create_app(service: MapService | None = None, clock: Clock | None = None) -> FastAPI:
@@ -333,14 +452,35 @@ def create_app(service: MapService | None = None, clock: Clock | None = None) ->
         """
         if at is None:
             return Response(current(app).snapshot_bytes, media_type="application/json")
-        if at.tzinfo is None:
-            at = at.replace(tzinfo=UTC)
-        return Response(current(app).positions_at(at), media_type="application/json")
+        return Response(current(app).positions_at(utc(at)), media_type="application/json")
+
+    @app.get("/api/replay", response_model=ReplayResponse)
+    def replay(start: datetime, end: datetime) -> Response:
+        """
+        Stored frames for playing back the past: the keyframe at or before `start`, then every frame up to `end`
+        (at most 15 minutes after `start`). Apply them in order: a keyframe replaces every train, other frames
+        add or update `trains` and drop `removed`. Between frames, trains move along their segments by `left` and
+        `due`, as with the stream.
+        """
+        start, end = utc(start), utc(end)
+        if end < start or end - start > MAX_REPLAY:
+            raise HTTPException(422, "end must be after start, and at most 15 minutes after it")
+        return Response(current(app).replay(start, end), media_type="application/json")
+
+    @app.get("/api/replay/days", response_model=list[ReplayDay])
+    def replay_days() -> list[ReplayDay]:
+        """UK days with stored frames, oldest first, and how much of each was recorded live or computed later."""
+        return current(app).replay_days()
+
+    @app.get("/api/replay/runs", response_model=list[ReplayRun])
+    def replay_runs(day: date) -> list[ReplayRun]:
+        """Unbroken stretches of stored frames on one UK day: the moments that can be replayed."""
+        return current(app).replay_runs(day)
 
     @app.get("/api/trains/{rid}", response_model=TrainDetail)
-    def train(rid: str) -> TrainDetail:
-        """One train's stops, times, route and position."""
-        detail = current(app).train(rid)
+    def train(rid: str, at: datetime | None = None) -> TrainDetail:
+        """One train's stops, times, route and position; with `at`, as the map showed them at that moment."""
+        detail = current(app).train(rid, utc(at) if at else None)
         if detail is None:
             raise HTTPException(404, f"No train {rid}")
         return detail

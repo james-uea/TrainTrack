@@ -9,6 +9,7 @@ from pydantic import TypeAdapter
 
 from api import (
     PositionsResponse,
+    ReplayResponse,
     TrainDetail,
     changes_dict,
     create_app,
@@ -47,10 +48,16 @@ class StubService:
         self.asked_at = at
         return self.snapshot_bytes
 
+    def replay(self, start, end):
+        self.asked_replay = (start, end)
+        frame = {"at": AT.isoformat(), "keyframe": True, "source": "computed", "active": 2,
+                 "trains": json.loads(self.snapshot_bytes)["trains"], "removed": []}
+        return to_json({"start": start.isoformat(), "end": end.isoformat(), "frames": [frame]})
+
     async def run(self):
         pass
 
-    def train(self, rid):
+    def train(self, rid, at=None):
         if rid != JOURNEY.rid:
             return None
         return TrainDetail(rid=rid, headcode="1A48", toc="VT", operator="Avanti West Coast", cancelled=False,
@@ -155,3 +162,15 @@ def test_positions_at_another_moment_read_a_time_without_a_zone_as_utc():
     with TestClient(create_app(service)) as api:
         assert api.get("/api/positions?at=2026-11-21T14:30").status_code == 200
     assert service.asked_at == datetime(2026, 11, 21, 14, 30, tzinfo=UTC)
+
+
+def test_replay_returns_frames_for_windows_up_to_15_minutes():
+    service = StubService()
+    with TestClient(create_app(service)) as api:
+        response = api.get("/api/replay?start=2026-11-21T14:40&end=2026-11-21T14:50")
+        assert response.status_code == 200
+        body = TypeAdapter(ReplayResponse).validate_json(response.content)
+        assert body.frames[0].keyframe and body.frames[0].trains[0].rid == JOURNEY.rid
+        assert service.asked_replay[0] == datetime(2026, 11, 21, 14, 40, tzinfo=UTC)
+        assert api.get("/api/replay?start=2026-11-21T14:40Z&end=2026-11-21T15:00Z").status_code == 422
+        assert api.get("/api/replay?start=2026-11-21T14:40Z&end=2026-11-21T14:30Z").status_code == 422
