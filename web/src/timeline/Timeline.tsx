@@ -27,6 +27,24 @@ function useRuns(day: string, live: boolean) {
   });
 }
 
+/** Copies the address, which holds the moment, speed, view and selected train. */
+function CopyLink() {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      title="Copy a link to this moment and view"
+      onClick={async () => {
+        await navigator.clipboard.writeText(window.location.href);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      }}
+    >
+      {copied ? "Copied" : "Copy link"}
+    </button>
+  );
+}
+
 /** Live, or any moment of any day: a day picker, a slider across it shaded where frames were stored, and controls. */
 export function Timeline() {
   const feed = useFeed();
@@ -131,6 +149,7 @@ export function Timeline() {
         />
       </div>
       <output className={styles.time}>{TIME.format(shown)}</output>
+      <CopyLink />
     </fieldset>
   );
 }

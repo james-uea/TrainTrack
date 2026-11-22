@@ -1,9 +1,9 @@
 import { Profiler, useEffect, useMemo } from "react";
 import { api } from "./api/client";
 import { benchEnabled, countCommit, runBench } from "./bench";
+import { readPlayback, writePlayback } from "./feed/address";
 import { FeedContext } from "./feed/context";
 import { FeedController } from "./feed/controller";
-import { replayStart } from "./feed/feed";
 import { Legend } from "./map/Legend";
 import { StatusBar } from "./map/StatusBar";
 import { TrainMap } from "./map/TrainMap";
@@ -30,10 +30,32 @@ export function App() {
   );
 
   useEffect(() => {
-    const at = replayStart();
+    const { at, speed, playing } = readPlayback();
     if (at === null) feed.live();
-    else feed.seek(at);
+    else feed.seek(at, speed, playing);
     return () => feed.stop();
+  }, [feed]);
+
+  // Keep the moment, speed and play state in the address, so it can be shared
+  useEffect(() => {
+    const write = () => {
+      const playback = useUi.getState().playback;
+      const replaying = playback.mode === "replay";
+      const url = writePlayback(new URL(window.location.href), {
+        at: replaying ? feed.now() : null,
+        speed: replaying ? playback.speed : 1,
+        playing: replaying ? playback.playing : true,
+      });
+      if (url.href !== window.location.href) window.history.replaceState(null, "", url);
+    };
+    const timer = setInterval(write, 2000);
+    const unsubscribe = useUi.subscribe((state, previous) => {
+      if (state.playback !== previous.playback) write();
+    });
+    return () => {
+      clearInterval(timer);
+      unsubscribe();
+    };
   }, [feed]);
 
   useEffect(() => {
