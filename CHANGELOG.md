@@ -18,6 +18,7 @@ Milestone 4: replay any day.
 - `GET /api/trains/{rid}?at=`: a train as it stood at a moment, without actual times after it and with the position the map showed
 - The map's timeline: Live, play and pause, 1×, 10× and 60×, a day picker, and a slider across the UK day shaded where frames are stored (darker for recorded, lighter for computed). Replay fetches frames in chunks ahead of the playhead and moves trains between them as live does; where nothing is stored, it shows positions computed by the server, marked "not recorded"
 - Shareable links: the address keeps the moment (`?at=`), speed (`speed=`), pause (`paused=1`), selected train and map view (`#map=zoom/lat/lon`), and "Copy link" copies it
+- `./run.sh recorder` and `./run.sh backfill [FROM TO]`; `./run.sh live` also runs the recorder
 - `pnpm test:e2e` also opens a replay link, pauses, changes speed and goes back to live. It needs frames for 21 Nov (`recorder.py --backfill 2026-11-21T13:50Z 2026-11-21T14:51Z`)
 
 ### Changed

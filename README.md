@@ -66,8 +66,9 @@ The `timetable` service also runs `retention.py` each day, which writes raw even
 Quick starts (`./run.sh` lists them):
 - `./run.sh db`: Postgres and Adminer; `./run.sh up`: everything in Docker; `./run.sh down`: stop them
 - `./run.sh dev`: the database, then the API and the map's dev server (http://localhost:5173); Ctrl+C stops both
-- `./run.sh replay [ISO time]`: the same, replaying a past moment; `./run.sh live`: the same plus the consumer
-- `./run.sh api [clock]`, `./run.sh web`, `./run.sh consumer`: one part on its own
+- `./run.sh replay [ISO time]`: the same, replaying a past moment; `./run.sh live`: the same plus the consumer and the recorder
+- `./run.sh api [clock]`, `./run.sh web`, `./run.sh consumer`, `./run.sh recorder`: one part on its own
+- `./run.sh backfill [FROM TO]`: compute replay frames for a past window (default 21 Nov 13:50–14:51 UTC)
 
 - `uv run src/migrate.py`: Apply all pending database migrations from `sql/`
 - `uv run src/initialise.py`: Seed the journey and reference tables from the daily timetable (`data/`, configure [Darwin Timetable Files](https://raildata.org.uk/dashboard/dataProduct/P-9ca6bc7e-62e1-44d6-b93a-1616f7d2caf8/overview) to point here). **Run this before you run `consumer.py`**
