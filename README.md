@@ -63,6 +63,12 @@ flowchart LR
 The `timetable` service also runs `retention.py` each day, which writes raw events older than 14 days to `data/archive/` and drops them from Postgres (see [Replay and retention](#replay-and-retention)).
 
 ## Usage
+Quick starts (`./run.sh` lists them):
+- `./run.sh db`: Postgres and Adminer; `./run.sh up`: everything in Docker; `./run.sh down`: stop them
+- `./run.sh dev`: the database, then the API and the map's dev server (http://localhost:5173); Ctrl+C stops both
+- `./run.sh replay [ISO time]`: the same, replaying a past moment; `./run.sh live`: the same plus the consumer
+- `./run.sh api [clock]`, `./run.sh web`, `./run.sh consumer`: one part on its own
+
 - `uv run src/migrate.py`: Apply all pending database migrations from `sql/`
 - `uv run src/initialise.py`: Seed the journey and reference tables from the daily timetable (`data/`, configure [Darwin Timetable Files](https://raildata.org.uk/dashboard/dataProduct/P-9ca6bc7e-62e1-44d6-b93a-1616f7d2caf8/overview) to point here). **Run this before you run `consumer.py`**
 - `uv run src/consumer.py`: Run the main consumer. Every Push Port message is stored in `darwin_events`, then applied: train statuses (actual and forecast times, platforms, late reasons), new or changed schedules, and deactivations
