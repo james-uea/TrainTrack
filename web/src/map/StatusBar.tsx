@@ -14,6 +14,7 @@ const DAY = new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/London", day: "
 /** The moment the map shows (UK time), how many trains, and whether the feed is live. */
 export function StatusBar({ store }: { store: TrainStore }) {
   const status = useUi((state) => state.status);
+  const playback = useUi((state) => state.playback);
   const [, setTick] = useState(0);
   useEffect(() => {
     const timer = setInterval(() => setTick((tick) => tick + 1), 1000);
@@ -22,7 +23,12 @@ export function StatusBar({ store }: { store: TrainStore }) {
 
   if (!store.clock.ready) return <div className={styles.bar}>Connecting…</div>;
   const now = new Date(store.clock.now());
-  const mode = store.clockName.split(":")[0];
+  const mode =
+    playback.mode === "live"
+      ? store.clockName.split(":")[0]
+      : playback.playing
+        ? `replay ${playback.speed}×`
+        : "paused";
   return (
     <div className={styles.bar}>
       <strong>{TIME.format(now)}</strong> {DAY.format(now)}
@@ -30,7 +36,15 @@ export function StatusBar({ store }: { store: TrainStore }) {
       <span>
         {store.trains.size.toLocaleString()} of {store.active.toLocaleString()} trains placed
       </span>
-      {status !== "live" && <span className={styles.warning}>{status}</span>}
+      {status === "estimated" && (
+        <span
+          className={styles.warning}
+          title="Nothing was recorded here: positions are estimated from today's data"
+        >
+          not recorded
+        </span>
+      )}
+      {status !== "live" && status !== "estimated" && <span className={styles.warning}>{status}</span>}
     </div>
   );
 }
