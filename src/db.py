@@ -29,6 +29,8 @@ MATCH_TOLERANCE = timedelta(minutes=5)
 # A TIPLOC the train visits once still matches a report this far from the planned time. Further out the
 # report is of a visit the schedule doesn't have (on 21 Nov all 19 gaps over an hour were wrong-leg matches)
 SINGLE_VISIT_TOLERANCE = timedelta(minutes=15)
+# Keyframes are written every 5 minutes; looking back further than this for one means there's a gap in the frames
+KEYFRAME_REACH = timedelta(minutes=10)
 
 # Live data a stop keeps when its journey's stops are replaced by a newer schedule
 LIVE_COLUMNS = (
@@ -934,6 +936,93 @@ class Database:
             LIMIT %s
         """, (day, limit))
         return self.cur.fetchall()
+
+    # Recorded frames (recorder.py) and replay
+
+    def add_frame(self, at, keyframe: bool, source: str, trains: int, active: int, data: bytes):
+        self.cur.execute("""
+            INSERT INTO position_frames (at, keyframe, source, trains, active, data) VALUES (%s, %s, %s, %s, %s, %s)
+        """, (at, keyframe, source, trains, active, data))
+
+    def count_frames(self, start, end) -> tuple[int, int]:
+        """Recorded and computed frames from `start` to `end`, inclusive."""
+        self.cur.execute("""
+            SELECT count(*) FILTER (WHERE source = 'recorded'), count(*) FILTER (WHERE source = 'computed')
+            FROM position_frames WHERE at BETWEEN %s AND %s
+        """, (start, end))
+        return self.cur.fetchone()
+
+    def delete_computed_frames(self, start, end):
+        self.cur.execute("DELETE FROM position_frames WHERE source = 'computed' AND at BETWEEN %s AND %s", (start, end))
+
+    def fetch_frames(self, start, end) -> list[tuple]:
+        """
+        The frames that rebuild every moment from `start` to `end`: the latest keyframe at or before `start` (or, in
+        a gap, the first one after it), then every frame after that up to `end`. Rows are (at, keyframe, source,
+        data), oldest first; empty when no keyframe is in reach.
+        """
+        self.cur.execute("""
+            WITH key AS (
+                SELECT at FROM (
+                    (SELECT at, 0 AS pick FROM position_frames
+                     WHERE keyframe AND at <= %(start)s AND at > %(start)s - %(reach)s ORDER BY at DESC LIMIT 1)
+                    UNION ALL
+                    (SELECT at, 1 FROM position_frames
+                     WHERE keyframe AND at > %(start)s AND at <= %(end)s ORDER BY at LIMIT 1)
+                ) candidates ORDER BY pick LIMIT 1
+            )
+            SELECT f.at, f.keyframe, f.source, f.data
+            FROM position_frames f, key WHERE f.at >= key.at AND f.at <= %(end)s ORDER BY f.at
+        """, {"start": start, "end": end, "reach": KEYFRAME_REACH})
+        return self.cur.fetchall()
+
+    def fetch_frame_runs(self, start, end, gap) -> list[tuple]:
+        """
+        Unbroken stretches of frames from `start` to `end`: (first, last, source, frames). Frames further apart than
+        `gap`, or from a different source, start a new stretch.
+        """
+        self.cur.execute("""
+            WITH ordered AS (
+                SELECT at, source,
+                    CASE WHEN at - LAG(at) OVER w > %(gap)s OR source IS DISTINCT FROM LAG(source) OVER w
+                        OR LAG(at) OVER w IS NULL THEN 1 ELSE 0 END AS starts
+                FROM position_frames WHERE at >= %(start)s AND at < %(end)s
+                WINDOW w AS (ORDER BY at)
+            ), runs AS (
+                SELECT at, source, SUM(starts) OVER (ORDER BY at) AS run FROM ordered
+            )
+            SELECT min(at), max(at), min(source), count(*) FROM runs GROUP BY run ORDER BY 1
+        """, {"start": start, "end": end, "gap": gap})
+        return self.cur.fetchall()
+
+    def fetch_frame_days(self) -> list[tuple]:
+        """UK days with frames: (day, recorded frames, computed frames), oldest first."""
+        self.cur.execute("""
+            SELECT (at AT TIME ZONE 'Europe/London')::DATE AS day,
+                count(*) FILTER (WHERE source = 'recorded'), count(*) FILTER (WHERE source = 'computed')
+            FROM position_frames GROUP BY 1 ORDER BY 1
+        """)
+        return self.cur.fetchall()
+
+    # Day partitions (retention.py)
+
+    def ensure_day_partition(self, parent: str, key_column: str, day) -> bool:
+        """Make `parent`'s partition for one UK day if it's missing. Returns whether it was made."""
+        self.cur.execute("SELECT ensure_day_partition(%s, %s, %s)", (parent, key_column, day))
+        return self.cur.fetchone()[0]
+
+    def fetch_day_partitions(self, parent: str) -> list[tuple[str, int]]:
+        """`parent`'s partitions and their (estimated) row counts, oldest first; the default partition is left out."""
+        self.cur.execute("""
+            SELECT c.relname, c.reltuples::BIGINT
+            FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
+            WHERE i.inhparent = to_regclass(%s) AND c.relname ~ '_[0-9]{8}$'
+            ORDER BY c.relname
+        """, (parent,))
+        return self.cur.fetchall()
+
+    def drop_partition(self, name: str):
+        self.cur.execute(sql.SQL("DROP TABLE {}").format(sql.Identifier(name)))
 
     def close(self):
         self.cur.close()

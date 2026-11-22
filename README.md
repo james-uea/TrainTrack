@@ -21,7 +21,9 @@ flowchart LR
     EV --> DB
     TM["Track Model, NaPTAN, BPLAN"] -- "track_model.py, tiploc_locations.py, segment_paths.py" --> DB
     DB --> TUI["Terminal UI"]
-    DB -- "api.py" --> MAP["Live map (web/)"]
+    DB -- "recorder.py" --> FR[("Recorded frames")]
+    DB -- "api.py" --> MAP["Live map and replay (web/)"]
+    FR -- "api.py" --> MAP
 ```
 
 ## Requirements
@@ -55,14 +57,18 @@ flowchart LR
 
 - `consumer` applies migrations, then consumes the Push Port continuously (restarts if it crashes)
 - `timetable` loads the timetable from `data/` on start, then again every day at 05:00 UK time
-- `api` serves live positions and the map on http://localhost:8000 (`MAP_CLOCK` in `.env` can replay a past moment)
+- `recorder` records what the map shows every 5 s, so any moment can be replayed
+- `api` serves live positions, replay and the map on http://localhost:8000 (`MAP_CLOCK` in `.env` can replay a past moment)
+
+The `timetable` service also runs `retention.py` each day, which writes raw events older than 14 days to `data/archive/` and drops them from Postgres (see [Replay and retention](#replay-and-retention)).
 
 ## Usage
 Quick starts (`./run.sh` lists them):
 - `./run.sh db`: Postgres and Adminer; `./run.sh up`: everything in Docker; `./run.sh down`: stop them
 - `./run.sh dev`: the database, then the API and the map's dev server (http://localhost:5173); Ctrl+C stops both
-- `./run.sh replay [ISO time]`: the same, replaying a past moment; `./run.sh live`: the same plus the consumer
-- `./run.sh api [clock]`, `./run.sh web`, `./run.sh consumer`: one part on its own
+- `./run.sh replay [ISO time]`: the same, replaying a past moment; `./run.sh live`: the same plus the consumer and the recorder
+- `./run.sh api [clock]`, `./run.sh web`, `./run.sh consumer`, `./run.sh recorder`: one part on its own
+- `./run.sh backfill [FROM TO]`: compute replay frames for a past window (default 21 Nov 13:50–14:51 UTC)
 
 - `uv run src/migrate.py`: Apply all pending database migrations from `sql/`
 - `uv run src/initialise.py`: Seed the journey and reference tables from the daily timetable (`data/`, configure [Darwin Timetable Files](https://raildata.org.uk/dashboard/dataProduct/P-9ca6bc7e-62e1-44d6-b93a-1616f7d2caf8/overview) to point here). **Run this before you run `consumer.py`**
@@ -73,15 +79,25 @@ Quick starts (`./run.sh` lists them):
 - `uv run src/search.py`: Run the train data viewer (CLI)
 - `uv run src/api.py`: Serve the API and the built map on http://localhost:8000
   - `--clock now` (default), `fixed:2026-11-21T14:30Z` (frozen at that moment) or `replay:2026-11-21T14:30Z` (runs forward from it)
-  - Routes: `/api/positions` (`?at=` for any moment), `/api/stream` (server-sent deltas), `/api/trains/{rid}`, `/api/segments`, `/api/stations`, `/api/operators`, `/api/health`, and `/tiles/track/{z}/{x}/{y}.pbf`
+  - Routes: `/api/positions` (`?at=` for any moment), `/api/stream` (server-sent deltas), `/api/trains/{rid}` (`?at=` too), `/api/replay` (stored frames), `/api/replay/days`, `/api/replay/runs`, `/api/segments`, `/api/stations`, `/api/operators`, `/api/health`, and `/tiles/track/{z}/{x}/{y}.pbf`
+- `uv run src/recorder.py`: Record the map every 5 s for replay
+  - `--backfill 2026-11-21T13:50Z 2026-11-21T14:51Z` computes frames for a window before recording started (marked `computed`)
+- `uv run src/retention.py`: Make the event log's day partitions ahead, and archive and drop expired days (`--dry-run` to see what it would do)
 - `uv run src/track_model.py`, `uv run src/tiploc_locations.py`, `uv run src/segment_paths.py`: Load the track, place every TIPLOC (hand fixes in `reference/tiploc_overrides.csv`), and route each pair of consecutive stops along the track
 
 ### The map (`web/`)
 - `pnpm install`, then `pnpm dev` serves the map on http://localhost:5173, calling the API on port 8000 (`TRAINTRACK_API` changes that)
 - `pnpm build` builds it into `web/dist`, which `api.py` serves
-- Open `?at=2026-11-21T14:30Z` to replay a past moment, `?train=<rid>` to open a train; press `/` to search
-- `pnpm test` (unit), `pnpm test:e2e` (Playwright smoke test against its own API on a replay clock; needs Chrome and that day's data), `pnpm lint`, `pnpm bench` (frame timings in headless Chrome)
+- The timeline at the bottom replays any moment: pick a day, drag the slider, play at 1×, 10× or 60×, or go back to Live. The slider is shaded where frames were stored
+- The address holds what's on screen, so it can be shared: `?at=2026-11-21T14:30Z&speed=10&paused=1&train=<rid>#map=11/51.46/-0.17`; press `/` to search
+- `pnpm test` (unit), `pnpm test:e2e` (Playwright tests against their own API on a replay clock; need Chrome, that day's data and its backfilled frames), `pnpm lint`, `pnpm bench` (frame timings in headless Chrome)
 - `pnpm gen:api` regenerates the API types after changing `api.py`
+
+## Replay and retention
+
+Replay plays back what the map showed, recorded as it happened by `recorder.py` into `position_frames`: a keyframe of every train every 5 minutes, and each 5 s tick's changes in between (about 55 MB a day). The consumer overwrites train times in place, so the past can't be rebuilt reliably from the database later. For moments before recording started, `recorder.py --backfill` computes frames from the database as it is now; these are marked `computed`, and later forecasts or cancellations can show through in them. Where there are no frames at all, the map shows positions computed on request, marked "not recorded".
+
+Raw Push Port messages stay in `darwin_events`, one partition per UK day, for `EVENTS_KEEP_DAYS` (14). After that `retention.py` writes each day to `data/archive/darwin_events-YYYY-MM-DD.jsonl.gz` (about 120 bytes a message, roughly 250 MB a day) and drops its partition. Frames are kept forever unless `FRAMES_KEEP_DAYS` is set.
 
 ## Planned work
 

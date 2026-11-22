@@ -25,6 +25,69 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/replay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Replay
+         * @description Stored frames for playing back the past: the keyframe at or before `start`, then every frame up to `end`
+         *     (at most 15 minutes after `start`). Apply them in order: a keyframe replaces every train, other frames
+         *     add or update `trains` and drop `removed`. Between frames, trains move along their segments by `left` and
+         *     `due`, as with the stream.
+         */
+        get: operations["replay_api_replay_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/replay/days": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Replay Days
+         * @description UK days with stored frames, oldest first, and how much of each was recorded live or computed later.
+         */
+        get: operations["replay_days_api_replay_days_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/replay/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Replay Runs
+         * @description Unbroken stretches of stored frames on one UK day: the moments that can be replayed.
+         */
+        get: operations["replay_runs_api_replay_runs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/trains/{rid}": {
         parameters: {
             query?: never;
@@ -34,7 +97,7 @@ export interface paths {
         };
         /**
          * Train
-         * @description One train's stops, times, route and position.
+         * @description One train's stops, times, route and position; with `at`, as the map showed them at that moment.
          */
         get: operations["train_api_trains__rid__get"];
         put?: never;
@@ -193,6 +256,73 @@ export interface components {
             active: number;
             /** Trains */
             trains: components["schemas"]["TrainPosition"][];
+        };
+        /** ReplayDay */
+        ReplayDay: {
+            /** Day */
+            day: string;
+            /** Recorded Minutes */
+            recorded_minutes: number;
+            /** Computed Minutes */
+            computed_minutes: number;
+        };
+        /**
+         * ReplayFrame
+         * @description One stored tick. A keyframe lists every placed train; otherwise only those that changed since the frame
+         *     before, and the rids removed.
+         */
+        ReplayFrame: {
+            /**
+             * At
+             * Format: date-time
+             */
+            at: string;
+            /** Keyframe */
+            keyframe: boolean;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "recorded" | "computed";
+            /** Active */
+            active: number;
+            /** Trains */
+            trains: components["schemas"]["TrainPosition"][];
+            /** Removed */
+            removed: string[];
+        };
+        /** ReplayResponse */
+        ReplayResponse: {
+            /**
+             * Start
+             * Format: date-time
+             */
+            start: string;
+            /**
+             * End
+             * Format: date-time
+             */
+            end: string;
+            /** Frames */
+            frames: components["schemas"]["ReplayFrame"][];
+        };
+        /** ReplayRun */
+        ReplayRun: {
+            /**
+             * Start
+             * Format: date-time
+             */
+            start: string;
+            /**
+             * End
+             * Format: date-time
+             */
+            end: string;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "recorded" | "computed";
         };
         /** Station */
         Station: {
@@ -384,9 +514,94 @@ export interface operations {
             };
         };
     };
-    train_api_trains__rid__get: {
+    replay_api_replay_get: {
+        parameters: {
+            query: {
+                start: string;
+                end: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReplayResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    replay_days_api_replay_days_get: {
         parameters: {
             query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReplayDay"][];
+                };
+            };
+        };
+    };
+    replay_runs_api_replay_runs_get: {
+        parameters: {
+            query: {
+                day: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReplayRun"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    train_api_trains__rid__get: {
+        parameters: {
+            query?: {
+                at?: string | null;
+            };
             header?: never;
             path: {
                 rid: string;

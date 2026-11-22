@@ -17,6 +17,9 @@ class Config:
     data_dir: str
     log_level: str
     map_clock: str
+    events_keep_days: int  # days of raw events kept in Postgres before they're archived
+    frames_keep_days: int  # days of recorded map frames kept; 0 keeps them forever
+    archive_dir: str
 
 
 def load_config(path: str = ".env") -> Config:
@@ -37,4 +40,7 @@ def load_config(path: str = ".env") -> Config:
         data_dir=values.get("DATA_DIR") or "data",
         log_level=values.get("LOG_LEVEL") or "INFO",
         map_clock=values.get("MAP_CLOCK") or "now",
+        events_keep_days=int(values.get("EVENTS_KEEP_DAYS") or 14),
+        frames_keep_days=int(values.get("FRAMES_KEEP_DAYS") or 0),
+        archive_dir=values.get("ARCHIVE_DIR") or os.path.join(values.get("DATA_DIR") or "data", "archive"),
     )

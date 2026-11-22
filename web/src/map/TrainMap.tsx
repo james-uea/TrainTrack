@@ -5,6 +5,7 @@ import { MapboxOverlay } from "@deck.gl/mapbox";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { useEffect, useMemo, useRef, useState } from "react";
 import MapView, { Layer, type MapRef, NavigationControl, Source, useControl } from "react-map-gl/maplibre";
+import { readView, viewHash } from "../feed/address";
 import { useUi } from "../state";
 import { placeTrain } from "../trains/motion";
 import type { SegmentCache } from "../trains/segments";
@@ -34,7 +35,8 @@ export const frameTimes: number[] = [];
 
 export function TrainMap({ store, segments }: { store: TrainStore; segments: SegmentCache }) {
   const [overlay] = useState(() => new MapboxOverlay({ interleaved: false, layers: [] }));
-  const zoomRef = useRef(INITIAL_VIEW.zoom);
+  const [initialView] = useState(() => readView() ?? INITIAL_VIEW);
+  const zoomRef = useRef(initialView.zoom);
   const mapRef = useRef<MapRef>(null);
   const select = useUi((state) => state.select);
   const selected = useUi((state) => state.selected);
@@ -199,12 +201,18 @@ export function TrainMap({ store, segments }: { store: TrainStore; segments: Seg
   return (
     <MapView
       ref={mapRef}
-      initialViewState={INITIAL_VIEW}
+      initialViewState={initialView}
       mapStyle={STYLE}
       dragRotate={false}
       touchPitch={false}
       onZoom={(event) => {
         zoomRef.current = event.viewState.zoom;
+      }}
+      onMoveEnd={(event) => {
+        // The view goes in the address's hash, so a shared link opens the same place
+        const url = new URL(window.location.href);
+        url.hash = viewHash(event.viewState);
+        window.history.replaceState(null, "", url);
       }}
       style={{ position: "absolute", inset: 0 }}
     >

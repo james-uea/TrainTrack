@@ -1,5 +1,6 @@
 // UI state shared between components
 import { create } from "zustand";
+import type { Playback } from "./feed/controller";
 import type { FeedStatus } from "./feed/feed";
 import type { DelayBand } from "./trains/delay";
 
@@ -11,11 +12,13 @@ export interface Focus {
 
 interface UiState {
   status: FeedStatus;
+  playback: Playback; // live, or replaying at a speed
   selected: string | null; // rid, kept in the address as ?train= so a train can be linked to
   hiddenBands: ReadonlySet<DelayBand>; // delay bands the map leaves out
   focus: Focus | null; // where the map should fly to next
   operator: { code: string; name: string } | null; // show only this operator's trains
   setStatus: (status: FeedStatus) => void;
+  setPlayback: (playback: Playback) => void;
   select: (rid: string | null) => void;
   toggleBand: (band: DelayBand) => void;
   setHiddenBands: (bands: Iterable<DelayBand>) => void;
@@ -36,11 +39,13 @@ function setTrainInAddress(rid: string | null) {
 
 export const useUi = create<UiState>((set) => ({
   status: "connecting",
+  playback: { mode: "live" },
   selected: trainInAddress(),
   hiddenBands: new Set(),
   focus: null,
   operator: null,
   setStatus: (status) => set({ status }),
+  setPlayback: (playback) => set({ playback }),
   select: (selected) => {
     setTrainInAddress(selected);
     set({ selected });

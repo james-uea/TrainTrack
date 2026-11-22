@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.8.0
+Milestone 4: replay any day.
+
+### Added
+- Migration `008_partition_events_by_day.sql`: `darwin_events` is split into one partition per UK day (`darwin_events_YYYYMMDD`), with `darwin_events_default` catching rows for a day with no partition yet. The SQL function `ensure_day_partition(parent, key_column, day)` makes a day's partition, moving its rows out of the default one
+- `retention.py`: makes partitions a week ahead, writes raw events older than `EVENTS_KEEP_DAYS` (default 14) to `ARCHIVE_DIR` (default `data/archive`) as `darwin_events-YYYY-MM-DD.jsonl.gz`, then drops their partition; drops recorded frames older than `FRAMES_KEEP_DAYS` (default 0, kept forever). `--dry-run` says what it would do. The timetable service runs it after each daily load, and the consumer makes today's partition on start
+- Migration `009_position_frames.sql`: the `position_frames` table, partitioned by UK day, holds what the map showed at each tick: a keyframe of every placed train every 5 minutes and at the start of each run, and only what changed in between, gzipped
+- `recorder.py`: ticks the live positions every 5 s and stores a frame each time. Runs as the `recorder` service in Compose. `--backfill FROM TO` computes frames for a past window from the database as it is now, marked `computed`; it won't touch recorded frames, and `--replace` recomputes computed ones
+- `frames.py`: the snapshot and changes wire format, shared by the API and the recorder (moved from `api.py`), and rebuilding any moment from stored frames
+- `GET /api/replay?start=&end=`: stored frames for up to 15 minutes, starting from the keyframe at or before `start`. `GET /api/replay/days` lists the UK days with frames and how many minutes were recorded or computed; `GET /api/replay/runs?day=` gives the unbroken stretches on one day
+- `GET /api/trains/{rid}?at=`: a train as it stood at a moment, without actual times after it and with the position the map showed
+- The map's timeline: Live, play and pause, 1×, 10× and 60×, a day picker, and a slider across the UK day shaded where frames are stored (darker for recorded, lighter for computed). Replay fetches frames in chunks ahead of the playhead and moves trains between them as live does; where nothing is stored, it shows positions computed by the server, marked "not recorded"
+- Shareable links: the address keeps the moment (`?at=`), speed (`speed=`), pause (`paused=1`), selected train and map view (`#map=zoom/lat/lon`), and "Copy link" copies it
+- `./run.sh recorder` and `./run.sh backfill [FROM TO]`; `./run.sh live` also runs the recorder
+- `pnpm test:e2e` also opens a replay link, pauses, changes speed and goes back to live. It needs frames for 21 Nov (`recorder.py --backfill 2026-11-21T13:50Z 2026-11-21T14:51Z`)
+
+### Changed
+- `GET /api/positions?at=` rebuilds the moment from stored frames when they cover it, and only otherwise computes it from the database as it is now
+- `?at=` on the map plays stored frames instead of asking for computed positions every 5 seconds
+
 ## 0.7.0
 Milestone 3: the live map.
 

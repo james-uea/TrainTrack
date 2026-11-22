@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "TrainTrack",
-    "version": "0.7.0"
+    "version": "0.8.0"
   },
   "paths": {
     "/api/positions": {
@@ -53,10 +53,129 @@
         }
       }
     },
+    "/api/replay": {
+      "get": {
+        "summary": "Replay",
+        "description": "Stored frames for playing back the past: the keyframe at or before `start`, then every frame up to `end`\n(at most 15 minutes after `start`). Apply them in order: a keyframe replaces every train, other frames\nadd or update `trains` and drop `removed`. Between frames, trains move along their segments by `left` and\n`due`, as with the stream.",
+        "operationId": "replay_api_replay_get",
+        "parameters": [
+          {
+            "name": "start",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Start"
+            }
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "title": "End"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReplayResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/replay/days": {
+      "get": {
+        "summary": "Replay Days",
+        "description": "UK days with stored frames, oldest first, and how much of each was recorded live or computed later.",
+        "operationId": "replay_days_api_replay_days_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ReplayDay"
+                  },
+                  "type": "array",
+                  "title": "Response Replay Days Api Replay Days Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/replay/runs": {
+      "get": {
+        "summary": "Replay Runs",
+        "description": "Unbroken stretches of stored frames on one UK day: the moments that can be replayed.",
+        "operationId": "replay_runs_api_replay_runs_get",
+        "parameters": [
+          {
+            "name": "day",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date",
+              "title": "Day"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ReplayRun"
+                  },
+                  "title": "Response Replay Runs Api Replay Runs Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/trains/{rid}": {
       "get": {
         "summary": "Train",
-        "description": "One train's stops, times, route and position.",
+        "description": "One train's stops, times, route and position; with `at`, as the map showed them at that moment.",
         "operationId": "train_api_trains__rid__get",
         "parameters": [
           {
@@ -66,6 +185,23 @@
             "schema": {
               "type": "string",
               "title": "Rid"
+            }
+          },
+          {
+            "name": "at",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "At"
             }
           }
         ],
@@ -431,6 +567,136 @@
           "trains"
         ],
         "title": "PositionsResponse"
+      },
+      "ReplayDay": {
+        "properties": {
+          "day": {
+            "type": "string",
+            "title": "Day"
+          },
+          "recorded_minutes": {
+            "type": "number",
+            "title": "Recorded Minutes"
+          },
+          "computed_minutes": {
+            "type": "number",
+            "title": "Computed Minutes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "day",
+          "recorded_minutes",
+          "computed_minutes"
+        ],
+        "title": "ReplayDay"
+      },
+      "ReplayFrame": {
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "At"
+          },
+          "keyframe": {
+            "type": "boolean",
+            "title": "Keyframe"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "recorded",
+              "computed"
+            ],
+            "title": "Source"
+          },
+          "active": {
+            "type": "integer",
+            "title": "Active"
+          },
+          "trains": {
+            "items": {
+              "$ref": "#/components/schemas/TrainPosition"
+            },
+            "type": "array",
+            "title": "Trains"
+          },
+          "removed": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Removed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "at",
+          "keyframe",
+          "source",
+          "active",
+          "trains",
+          "removed"
+        ],
+        "title": "ReplayFrame",
+        "description": "One stored tick. A keyframe lists every placed train; otherwise only those that changed since the frame\nbefore, and the rids removed."
+      },
+      "ReplayResponse": {
+        "properties": {
+          "start": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Start"
+          },
+          "end": {
+            "type": "string",
+            "format": "date-time",
+            "title": "End"
+          },
+          "frames": {
+            "items": {
+              "$ref": "#/components/schemas/ReplayFrame"
+            },
+            "type": "array",
+            "title": "Frames"
+          }
+        },
+        "type": "object",
+        "required": [
+          "start",
+          "end",
+          "frames"
+        ],
+        "title": "ReplayResponse"
+      },
+      "ReplayRun": {
+        "properties": {
+          "start": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Start"
+          },
+          "end": {
+            "type": "string",
+            "format": "date-time",
+            "title": "End"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "recorded",
+              "computed"
+            ],
+            "title": "Source"
+          }
+        },
+        "type": "object",
+        "required": [
+          "start",
+          "end",
+          "source"
+        ],
+        "title": "ReplayRun"
       },
       "Station": {
         "properties": {

@@ -1,0 +1,147 @@
+.timeline {
+  position: absolute;
+  z-index: 3; /* above deck.gl, which draws in MapLibre's control layer */
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(760px, calc(100% - 360px));
+  box-sizing: border-box;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 0;
+  padding: 8px 12px;
+  border: 0;
+  background: var(--panel-bg);
+  border-radius: 10px;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.2);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 900px) {
+  .timeline {
+    left: 8px;
+    right: 8px;
+    bottom: 8px;
+    width: auto;
+    transform: none;
+    flex-wrap: wrap;
+  }
+}
+
+.timeline button {
+  min-width: 32px;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid #d0d0d6;
+  border-radius: 6px;
+  background: #fff;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.timeline button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.timeline button[aria-pressed="true"] {
+  border-color: #1d1d1f;
+  background: #1d1d1f;
+  color: #fff;
+}
+
+.live {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #9a9aa0;
+}
+
+.live[aria-pressed="true"] .dot {
+  background: #e5484d;
+}
+
+.speeds {
+  display: flex;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.speeds button {
+  border-radius: 0;
+}
+
+.speeds button:first-child {
+  border-radius: 6px 0 0 6px;
+}
+
+.speeds button:last-child {
+  border-radius: 0 6px 6px 0;
+}
+
+.speeds button + button {
+  margin-left: -1px;
+}
+
+.day {
+  height: 28px;
+  box-sizing: border-box;
+  padding: 0 6px;
+  border: 1px solid #d0d0d6;
+  border-radius: 6px;
+  font: inherit;
+}
+
+.track {
+  position: relative;
+  flex: 1;
+  min-width: 160px;
+  display: flex;
+  align-items: center;
+}
+
+.track input {
+  position: relative;
+  width: 100%;
+  margin: 0;
+  accent-color: #1d1d1f;
+}
+
+/* Stretches with stored frames, drawn just under the slider's track */
+.runs {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -3px;
+  height: 4px;
+  border-radius: 2px;
+  background: #e6e6ea;
+  overflow: hidden;
+}
+
+.runs span {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: #4b2a85;
+}
+
+.runs span[data-source="computed"] {
+  background: #b9a7d9;
+}
+
+.time {
+  min-width: 40px;
+  text-align: right;
+  font-weight: 600;
+}

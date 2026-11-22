@@ -1,5 +1,5 @@
 // Every train the map shows, kept outside React: the animation loop reads it on every frame
-import type { PositionChanges, PositionsResponse, TrainPosition } from "../api/client";
+import type { PositionChanges, PositionsResponse, ReplayFrame, TrainPosition } from "../api/client";
 import { ServerClock } from "../feed/serverClock";
 import { DELAY_BANDS, type DelayBand, delayBand } from "./delay";
 import { isMoving } from "./motion";
@@ -32,6 +32,26 @@ export class TrainStore {
     for (const rid of changes.removed) this.trains.delete(rid);
     for (const train of changes.trains) this.trains.set(train.rid, train);
     this.accept(changes.version, changes.at, changes.clock, changes.active);
+  }
+
+  /** Stored frames, in order: a keyframe replaces every train, the rest add, update and remove some. */
+  applyFrames(frames: ReplayFrame[]) {
+    const last = frames.at(-1);
+    if (!last) return;
+    for (const frame of frames) {
+      if (frame.keyframe) this.trains = new Map(frame.trains.map((train) => [train.rid, train]));
+      else {
+        for (const rid of frame.removed) this.trains.delete(rid);
+        for (const train of frame.trains) this.trains.set(train.rid, train);
+      }
+    }
+    this.accept(this.version + 1, last.at, `replay:${last.source}`, last.active);
+  }
+
+  /** Drop every train, when switching between live and replay. */
+  clear() {
+    this.trains = new Map();
+    this.accept(this.version + 1, new Date().toISOString(), "", 0);
   }
 
   /** Where a train is in `order` (and the drawing arrays), or -1 if it isn't on the map. */

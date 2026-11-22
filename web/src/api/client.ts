@@ -12,3 +12,6 @@ export type TrainStop = components["schemas"]["TrainStop"];
 export type Health = components["schemas"]["Health"];
 export type Station = components["schemas"]["Station"];
 export type Operator = components["schemas"]["Operator"];
+export type ReplayFrame = components["schemas"]["ReplayFrame"];
+export type ReplayDay = components["schemas"]["ReplayDay"];
+export type ReplayRun = components["schemas"]["ReplayRun"];

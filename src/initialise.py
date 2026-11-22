@@ -17,6 +17,7 @@ from os.path import isfile, join
 
 from lxml import etree
 
+import retention
 import segment_paths
 from config import load_config
 from coverage_report import summary_line
@@ -243,6 +244,7 @@ def main():
     try:
         run(db, config.data_dir)
         if args.daily:
+            retention.ensure_partitions(db, datetime.now(LONDON).date())
             at = parse_time(args.daily)
             if at is None:
                 raise SystemExit(f"--daily expects HH:MM, got {args.daily!r}")
@@ -254,6 +256,12 @@ def main():
                     run(db, config.data_dir)
                 except Exception:
                     logger.exception("Timetable load failed, will retry tomorrow")
+                    db.conn.rollback()
+                try:
+                    retention.run(db, config)
+                except Exception:
+                    logger.exception("Retention run failed, will retry tomorrow")
+                    db.conn.rollback()
     finally:
         db.close()
 
