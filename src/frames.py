@@ -4,7 +4,11 @@ between two snapshots. Recorded frames store exactly these, gzipped.
 """
 
 import gzip
+import itertools
 import json
+import math
+from collections.abc import Callable
+from datetime import datetime
 
 from live import Clock, Snapshot
 from positions import Journey, Position
@@ -69,3 +73,66 @@ def pack(value: dict) -> bytes:
 def unpack(data: bytes) -> dict:
     return json.loads(gzip.decompress(data))
 
+
+def rebuild(frames: list[dict]) -> dict:
+    """
+    The snapshot a run of frames adds up to: the first must be a keyframe, each later one either a keyframe (which
+    replaces everything) or the changes since the frame before it.
+    """
+    trains: dict[str, dict] = {}
+    current: dict = {}
+    for frame in frames:
+        if "removed" not in frame:  # a keyframe
+            trains = {train["rid"]: train for train in frame["trains"]}
+        else:
+            for rid in frame["removed"]:
+                trains.pop(rid, None)
+            for train in frame["trains"]:
+                trains[train["rid"]] = train
+        current = frame
+    return {**{k: v for k, v in current.items() if k != "removed"}, "trains": list(trains.values())}
+
+
+def fraction_at(train: dict, at: datetime) -> float:
+    """How far along its segment a train is at `at`: the formula the map uses between updates (motion.ts)."""
+    if train["state"] == "held":
+        return 1.0
+    if not train["left"] or not train["due"]:
+        return train["fraction"]
+    left, due = datetime.fromisoformat(train["left"]), datetime.fromisoformat(train["due"])
+    if due <= left:
+        return 1.0
+    return min(max((at - left) / (due - left), 0.0), 1.0)
+
+
+def point_along(line: list[tuple[float, float]], fraction: float) -> tuple[float, float, float]:
+    """(lon, lat, bearing) `fraction` of the way along a (lon, lat) line, measuring with a local flat projection."""
+    scale = math.cos(math.radians(sum(lat for _, lat in line) / len(line)))
+    steps = [math.hypot((b[0] - a[0]) * scale, b[1] - a[1]) for a, b in itertools.pairwise(line)]
+    distance = fraction * sum(steps)
+    last = len(steps) - 1
+    for index, ((a, b), step) in enumerate(zip(itertools.pairwise(line), steps, strict=True)):
+        if distance <= step or index == last:
+            t = min(distance / step, 1.0) if step else 0.0
+            bearing = math.degrees(math.atan2((b[0] - a[0]) * scale, b[1] - a[1])) % 360
+            return a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, bearing
+        distance -= step
+    return line[-1][0], line[-1][1], 0.0
+
+
+def advance(snapshot: dict, at: datetime, segment: Callable[[str, str], list | None]) -> dict:
+    """
+    A rebuilt snapshot moved on to `at`: frames only resend a running train when its segment or times change, so
+    its stored point is from its last change. Moving trains are placed along their segment as the map does.
+    """
+    trains = []
+    for train in snapshot["trains"]:
+        moving = train["state"] in ("running", "held") and train["from_tiploc"] != train["to_tiploc"]
+        line = segment(train["from_tiploc"], train["to_tiploc"]) if moving else None
+        if line and len(line) > 1:
+            fraction = fraction_at(train, at)
+            lon, lat, bearing = point_along(line, fraction)
+            train = {**train, "lon": round(lon, 5), "lat": round(lat, 5), "bearing": round(bearing) % 360,
+                     "fraction": round(fraction, 4)}
+        trains.append(train)
+    return {**snapshot, "at": at.isoformat(), "trains": trains}
