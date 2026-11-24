@@ -13,7 +13,7 @@ from collections.abc import Iterable, Iterator
 from datetime import datetime, timedelta
 from datetime import time as dtime
 from os import listdir
-from os.path import isdir, isfile, join
+from os.path import getmtime, isdir, isfile, join
 
 from lxml import etree
 
@@ -32,12 +32,15 @@ JOURNEY_BATCH_SIZE = 5000
 
 # The folder RailData delivers timetable files into, and the prefix of files downloaded by hand
 TIMETABLE_FOLDER = "PPTimetable"
+# A timetable file changed more recently than this may still be uploading, so it isn't loaded yet
+UPLOAD_SETTLE_SECONDS = 120
 
 
 def get_latest(data_dir: str, ref: bool = False) -> str | None:
     """
     The newest timetable file in data_dir. RailData's SFTP delivery puts files in a PPTimetable folder
     (`PPTimetable/20261123020540_v8.xml.gz`); files downloaded by hand are named `PPTimetable_<timestamp>_v8.xml`.
+    A file changed in the last UPLOAD_SETTLE_SECONDS is skipped, as RailData may still be uploading it.
     """
     suffix = "_ref_v4" if ref else "_v8"
     pattern = re.compile(rf"{TIMETABLE_FOLDER}[_/](\d{{14}}){suffix}\.xml(\.gz)?")
@@ -47,7 +50,11 @@ def get_latest(data_dir: str, ref: bool = False) -> str | None:
     if isdir(folder):
         names += [f"{TIMETABLE_FOLDER}/{f}" for f in listdir(folder) if isfile(join(folder, f))]
 
-    timestamped = [(int(match.group(1)), name) for name in names if (match := pattern.fullmatch(name))]
+    settled_before = time.time() - UPLOAD_SETTLE_SECONDS
+    timestamped = [
+        (int(match.group(1)), name) for name in names
+        if (match := pattern.fullmatch(name)) and getmtime(join(data_dir, name)) < settled_before
+    ]
     return join(data_dir, max(timestamped)[1]) if timestamped else None
 
 

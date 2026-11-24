@@ -34,15 +34,16 @@ SINGLE_VISIT_TOLERANCE = timedelta(minutes=15)
 KEYFRAME_REACH = timedelta(minutes=10)
 
 # The timetable reload and the consumer write the same journeys' rows, so they can deadlock; Postgres then
-# aborts one of the two transactions. The aborted one is run again this many times, waiting a little longer
-# each time (0.1 s, 0.2 s, ...). On 24 Nov two consumer messages were lost to this during one reload
+# aborts one of the two transactions. The aborted one is tried up to this many times in all, waiting a little
+# longer before each retry (0.1 s, 0.2 s, ...). On 24 Nov two consumer messages were lost to this during one reload
 TRANSACTION_ATTEMPTS = 5
 RETRY_WAIT_SECONDS = 0.1
 
 # Errors that mean Postgres aborted a transaction that would succeed if run again (40P01, 40001)
 RETRYABLE_ERRORS = (psycopg.errors.DeadlockDetected, psycopg.errors.SerializationFailure)
 
-# What handle_message counts for the consumer's stats line (plus "failed" for a message it couldn't apply)
+# What handle_message counts for the consumer's stats line, plus "failed" for a message it couldn't apply and
+# "lost" for one it couldn't write to darwin_events either
 MESSAGE_COUNTS = ("statuses", "unmatched_locations", "added_locations", "unknown_trains", "schedules", "deactivated")
 
 # Live data a stop keeps when its journey's stops are replaced by a newer schedule
@@ -380,8 +381,9 @@ class Database:
 
     def handle_message(self, message: PushPortMessage) -> dict[str, int]:
         """
-        Log a Push Port message and apply everything in it, in one transaction, run again if it deadlocks.
-        If it still can't be applied, the raw message is logged on its own so the event log stays complete.
+        Log a Push Port message and apply everything in it, in one transaction, tried again if it deadlocks.
+        If it still can't be applied, for any reason, the raw message is written to darwin_events on its own so
+        it isn't lost. Nothing in the table marks it unapplied; the consumer's log has the error.
         """
         def apply() -> dict[str, int]:
             counts = dict.fromkeys(MESSAGE_COUNTS, 0)
@@ -407,15 +409,19 @@ class Database:
 
         try:
             return self.in_transaction(apply, f"Message {message.sequence}")
-        except psycopg.Error:
+        except Exception:
+            # Not just database errors: a message the code can't handle mustn't stop the consumer, which would
+            # then get the same message from Kafka again on restart
             logger.exception("Couldn't apply message %s, logging it unapplied", message.sequence)
             self.conn.rollback()
+        counts = dict.fromkeys(MESSAGE_COUNTS, 0) | {"failed": 1}
         try:
             self.in_transaction(lambda: self.record_event(message), f"Logging message {message.sequence}")
         except psycopg.Error:
-            logger.exception("Couldn't log message %s either", message.sequence)
+            logger.exception("Couldn't log message %s either, so it's lost", message.sequence)
             self.conn.rollback()
-        return dict.fromkeys(MESSAGE_COUNTS, 0) | {"failed": 1}
+            counts["lost"] = 1
+        return counts
 
     def record_event(self, message: PushPortMessage):
         self.cur.execute("""
@@ -481,6 +487,9 @@ class Database:
         Apply a TS (train status) update, or return None if the train isn't known at all (not in the
         timetable and no schedule message seen yet).
         """
+        # Lock the journey before its stops, the order the timetable load and schedule messages take them in,
+        # so the two don't deadlock over one train
+        self.cur.execute("SELECT 1 FROM train_journeys WHERE rid = %s FOR UPDATE", (status.rid,))
         stops = self.fetch_stop_rows(status.rid)
         if not stops:
             logger.debug("Status for unknown train %s", status.rid)

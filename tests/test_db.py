@@ -330,6 +330,20 @@ def test_a_message_that_cant_be_applied_is_still_logged(db, monkeypatch):
     assert db.cur.fetchall() == [(["TS"], [RID])]
 
 
+def test_a_message_the_code_cant_handle_is_logged_and_doesnt_stop_the_consumer(db, monkeypatch):
+    db.add_schedules([parse_schedule(SCHEDULE)])
+
+    def broken(_status):
+        raise ValueError("unexpected time format")
+
+    monkeypatch.setattr(db, "apply_status", broken)
+    counts = db.handle_message(status({"tpl": "AAA", "wtd": "23:40", "dep": {"at": "23:41"}}))
+
+    assert counts["failed"] == 1 and "lost" not in counts
+    db.cur.execute("SELECT kinds FROM darwin_events")
+    assert db.cur.fetchall() == [(["TS"],)]
+
+
 def test_a_timetable_batch_aborted_by_a_deadlock_is_run_again(db, monkeypatch):
     deadlock(db, monkeypatch, "_upsert_journeys", times=1)
     db.add_schedules([parse_schedule(SCHEDULE)])
