@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.8.3
+
+### Fixed
+- The timetable service no longer leaves a transaction open for a day after each daily run. When no event partition was old enough to drop, `retention.run` read the partition list and never committed, and that open transaction stopped vacuum clearing dead rows from every table until the next run. On the server, on 24 Nov, `train_stops` had 4.95M dead rows to 1.13M live ones by 15:00, and the live map's once-a-minute window query took 4.6 s. `retention.run` now commits at the end, and the daily loop ends any transaction still open, with a warning, before it waits
+
 ## 0.8.2
 
 ### Fixed

@@ -16,6 +16,7 @@ from os import listdir
 from os.path import getmtime, isdir, isfile, join
 
 from lxml import etree
+from psycopg.pq import TransactionStatus
 
 import retention
 import segment_paths
@@ -255,6 +256,10 @@ def main():
             if at is None:
                 raise SystemExit(f"--daily expects HH:MM, got {args.daily!r}")
             while True:
+                if db.conn.info.transaction_status != TransactionStatus.IDLE:
+                    # An open transaction stops vacuum clearing dead rows from every table while this waits a day
+                    logger.warning("A transaction was left open after the last run; ending it before waiting")
+                    db.conn.rollback()
                 wait = seconds_until(at)
                 logger.info("Next timetable load in %.0f minutes", wait / 60)
                 time.sleep(wait)
