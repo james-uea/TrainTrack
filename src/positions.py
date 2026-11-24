@@ -2,17 +2,18 @@
 Estimate where trains are at a moment in time, from their stops' planned, forecast and actual times and the
 track paths between stops.
 
-`estimate_position` is pure: it takes the journey, the time and a source of paths, so the live map and a
-replay of past data can both use it.
+`estimate_position` is pure: it takes the journey, the time, a source of paths and other trains' recent run times,
+so the live map and a replay of past data can both use it.
 
     uv run src/positions.py [--at ISO_TIME] [--limit N] [--geojson out.geojson]
 """
 
 import argparse
 import json
+import statistics
 import time
-from collections import Counter
-from collections.abc import Callable
+from collections import Counter, defaultdict
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from itertools import pairwise
@@ -44,6 +45,12 @@ HOLD_LIMIT = timedelta(minutes=3)
 # that doesn't report at a call has most likely gone through a call that never reports. On the 21 Nov 14:05-14:51
 # check, 3 cut held estimates over 1 km out from 13 to 2 and p95 error from 1,964 to 1,962 m; 5 was no better
 HOLD_MIN_DELAY: int | None = 3
+# A train running between two stops isn't expected at the second sooner than other trains have recently taken
+# over the same pair: the median of their runs in this window, if there are at least this many. On the 24 Nov
+# 07:00-09:00 replay, this and never aiming sooner than planned + delay cut map pull-backs from 9.7 to 7.5 per
+# train-hour, and those over 1 km from 2.9 to 1.5 (.memory/rubber-banding-bench.md)
+SECTION_WINDOW = timedelta(minutes=30)
+SECTION_MIN_RUNS = 2
 # How far ahead along the path to look for the bearing (metres)
 BEARING_LOOKAHEAD = 25.0
 
@@ -111,11 +118,44 @@ class Position:
 PathSource = Callable[[str, str], tuple[LineString, str] | None]
 
 
+class SectionTimes:
+    """
+    How long trains have recently taken between consecutive reported stops, from their actual times: the state of
+    the line, which a single train's forecast doesn't know about.
+    """
+
+    def __init__(self, journeys: Iterable[Journey], at: datetime):
+        self.runs: dict[tuple[str, str], list[tuple[datetime, float]]] = defaultdict(list)
+        since = at - SECTION_WINDOW
+        for journey in journeys:
+            previous: tuple[str, datetime] | None = None  # the latest reported stop: (TIPLOC, when it left)
+            for stop in journey.stops:
+                if stop.cancelled or stop.point is None:
+                    continue
+                arrived = stop.actual_arrival or stop.actual_pass
+                left = stop.actual_departure or stop.actual_pass
+                if (arrived and arrived > at) or (not arrived and not left):
+                    if arrived:
+                        break  # a replay: this and later reports haven't happened yet
+                    continue  # no report here: the run carries on to the next stop that has one
+                if previous and arrived and arrived >= since:
+                    self.runs[(previous[0], stop.tiploc)].append((arrived, (arrived - previous[1]).total_seconds()))
+                previous = (stop.tiploc, left) if left and left <= at else None
+
+    def typical_run(self, from_tiploc: str, to_tiploc: str, at: datetime) -> timedelta | None:
+        """The median run from one stop to the other among trains that finished it recently, if enough did."""
+        recent = [run for arrived, run in self.runs.get((from_tiploc, to_tiploc), ()) if at - SECTION_WINDOW <= arrived <= at]
+        if len(recent) < SECTION_MIN_RUNS:
+            return None
+        return timedelta(seconds=statistics.median(recent))
+
+
 @dataclass
 class _Timeline:
     """A journey's stops with the times to use at one moment: actuals so far, then forecasts or planned + delay."""
     stops: list[Stop]
     at: datetime
+    sections: SectionTimes | None = None
     reported: int | None = None  # index of the latest stop with an actual time at or before `at`
     reported_at: datetime | None = None
     delay: timedelta = field(default_factory=timedelta)
@@ -146,6 +186,25 @@ class _Timeline:
             return max(value, self.reported_at)
         return value
 
+    @staticmethod
+    def _expected(forecast: datetime | None, planned: datetime | None) -> datetime | None:
+        """
+        Darwin's forecast, but never sooner than planned + the delay at the last report. Forecasts are revised later
+        mid-run far more often than earlier, and each later revision pulls the map's train backwards.
+        """
+        return max(forecast, planned) if forecast and planned else forecast or planned
+
+    def _section_floor(self, index: int, expected: datetime | None) -> datetime | None:
+        """No sooner than other trains have recently taken from the latest reported stop to this one."""
+        if self.sections is None or expected is None or self.reported is None or index <= self.reported:
+            return expected
+        start = self.stops[self.reported]
+        left = self._seen(start.actual_departure) or self._seen(start.actual_pass)
+        if left is None:
+            return expected
+        run = self.sections.typical_run(start.tiploc, self.stops[index].tiploc, self.at)
+        return max(expected, left + run) if run is not None else expected
+
     def arrival(self, index: int) -> datetime | None:
         stop = self.stops[index]
         actual = self._seen(stop.actual_arrival) or self._seen(stop.actual_pass)
@@ -153,7 +212,7 @@ class _Timeline:
             return actual
         forecast = (stop.estimated_arrival or stop.estimated_pass) if self.reported is None or index >= self.reported else None
         planned = stop.planned_arrival + self.delay if stop.planned_arrival else None
-        return self._bounded(index, forecast or planned)
+        return self._bounded(index, self._section_floor(index, self._expected(forecast, planned)))
 
     def departure(self, index: int) -> datetime | None:
         stop = self.stops[index]
@@ -162,7 +221,7 @@ class _Timeline:
             return actual
         forecast = (stop.estimated_departure or stop.estimated_pass) if self.reported is None or index >= self.reported else None
         planned = stop.planned_departure + self.delay if stop.planned_departure else None
-        departure = self._bounded(index, forecast or planned)
+        departure = self._bounded(index, self._expected(forecast, planned))
         arrival = self.arrival(index)
         return max(departure, arrival) if departure and arrival else departure or arrival
 
@@ -194,12 +253,16 @@ def service_status(journey: Journey, at: datetime) -> str:
     return "active"
 
 
-def estimate_position(journey: Journey, at: datetime, paths: PathSource) -> Position | None:
-    """Where the train is at `at`, or None if it isn't running then (or none of its stops can be placed)."""
+def estimate_position(journey: Journey, at: datetime, paths: PathSource,
+                      sections: SectionTimes | None = None) -> Position | None:
+    """
+    Where the train is at `at`, or None if it isn't running then (or none of its stops can be placed). `sections`,
+    other trains' recent run times, keeps a train from being expected sooner than the line is running.
+    """
     if service_status(journey, at) != "active":
         return None
     stops = [stop for stop in journey.stops if not stop.cancelled]
-    timeline = _Timeline(stops, at)
+    timeline = _Timeline(stops, at, sections)
     placed = [index for index, stop in enumerate(stops) if stop.point is not None]
     if not placed:
         return None
@@ -383,7 +446,8 @@ def main():
         db.close()
 
     statuses = Counter(service_status(journey, at) for journey in journeys)
-    results = [(j, p) for j in journeys if (p := estimate_position(j, at, paths)) is not None]
+    sections = SectionTimes(journeys, at)
+    results = [(j, p) for j in journeys if (p := estimate_position(j, at, paths, sections)) is not None]
     estimated = time.perf_counter()
 
     active = statuses["active"]

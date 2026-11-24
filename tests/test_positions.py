@@ -6,7 +6,15 @@ import pytest
 from shapely import to_wkb
 from shapely.geometry import LineString
 
-from positions import Journey, PathCache, Stop, estimate_position, route, service_status
+from positions import (
+    Journey,
+    PathCache,
+    SectionTimes,
+    Stop,
+    estimate_position,
+    route,
+    service_status,
+)
 from tiploc_locations import to_wgs84
 from util import LONDON
 
@@ -90,6 +98,33 @@ def test_running_part_way_along_a_segment():
 def test_a_forecast_beats_planned_plus_delay():
     train = simple(AAA={"actual_departure": t("10:00")}, BBB={"estimated_arrival": t("10:20")})
     assert estimate_position(train, t("10:05"), paths).fraction == pytest.approx(0.25)
+
+
+def test_a_forecast_sooner_than_planned_plus_delay_is_not_used():
+    # Left 2 late, so due at BBB 10:12; a 10:10 forecast would put the train ahead, then pull it back when revised
+    train = simple(AAA={"actual_departure": t("10:02")}, BBB={"estimated_arrival": t("10:10")})
+    assert estimate_position(train, t("10:07"), paths).fraction == pytest.approx(0.5)
+
+
+def other_train(left_aaa, reached_bbb):
+    return simple(AAA={"actual_departure": left_aaa}, BBB={"actual_arrival": reached_bbb})
+
+
+def test_a_train_isnt_expected_sooner_than_other_trains_recently_took():
+    # Two trains in the last half hour took 15 minutes from AAA to BBB, against 10 in the timetable
+    others = [other_train(t("09:30"), t("09:45")), other_train(t("09:40"), t("09:55"))]
+    train = simple(AAA={"actual_departure": t("10:00")})
+    sections = SectionTimes(others, t("10:05"))
+    position = estimate_position(train, t("10:05"), paths, sections)
+    assert position.fraction == pytest.approx(5 / 15)
+    assert position.due == t("10:15")
+
+
+def test_one_recent_run_or_old_runs_dont_set_the_pace():
+    others = [other_train(t("09:00"), t("09:15")), other_train(t("09:40"), t("09:55"))]  # 09:15 is over 30 min ago
+    train = simple(AAA={"actual_departure": t("10:00")})
+    position = estimate_position(train, t("10:05"), paths, SectionTimes(others, t("10:05")))
+    assert position.fraction == pytest.approx(0.5)
 
 
 def test_dwelling_at_a_call():

@@ -25,6 +25,7 @@ from positions import (
     Journey,
     PathCache,
     Position,
+    SectionTimes,
     Stop,
     estimate_position,
     segment_line,
@@ -36,6 +37,8 @@ logger = logging.getLogger(__name__)
 TICK = timedelta(seconds=5)
 # How often (in clock time) to look for trains entering or leaving the time window positions cover
 WINDOW_REFRESH = timedelta(seconds=60)
+# How often (in clock time) to work out other trains' recent run times between stops again
+SECTIONS_REFRESH = timedelta(seconds=60)
 # How often (in real time) to reload segment paths, which the daily timetable load adds to
 PATHS_REFRESH = 15 * 60.0
 # The consumer stamps updated_at when its transaction starts, which can be a moment before it commits, so each
@@ -103,6 +106,8 @@ class LivePositions:
         self.paths: PathCache | None = None
         self._paths_loaded = 0.0
         self._window_at: datetime | None = None
+        self.sections: SectionTimes | None = None
+        self._sections_at: datetime | None = None
         self._polled_at: datetime | None = None
 
     def tick(self) -> Snapshot:
@@ -131,13 +136,18 @@ class LivePositions:
             self.db.conn.rollback()
 
         mark = time.perf_counter()
+        if self.sections is None or not timedelta(0) <= at - self._sections_at < SECTIONS_REFRESH:
+            self.sections, self._sections_at = SectionTimes(self.journeys.values(), at), at
+            timings["sections"] = time.perf_counter() - mark
+
+        mark = time.perf_counter()
         active = 0
         positions = []
         for journey in self.journeys.values():
             if service_status(journey, at) != "active":
                 continue
             active += 1
-            if (position := estimate_position(journey, at, self.paths)) is not None:
+            if (position := estimate_position(journey, at, self.paths, self.sections)) is not None:
                 positions.append((journey, position))
         timings["estimate"] = time.perf_counter() - mark
         timings["total"] = time.perf_counter() - started
