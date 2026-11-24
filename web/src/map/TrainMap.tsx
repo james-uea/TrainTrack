@@ -7,7 +7,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import MapView, { Layer, type MapRef, NavigationControl, Source, useControl } from "react-map-gl/maplibre";
 import { readView, viewHash } from "../feed/address";
 import { useUi } from "../state";
-import { placeTrain } from "../trains/motion";
+import { Smoother } from "../trains/motion";
 import type { SegmentCache } from "../trains/segments";
 import type { TrainStore } from "../trains/store";
 import { useTrain } from "../trains/useTrain";
@@ -82,6 +82,7 @@ export function TrainMap({ store, segments }: { store: TrainStore; segments: Seg
     let positions = new Float32Array(0);
     let angles = new Float32Array(0);
     const segment = (key: string) => segments.get(key);
+    const smoother = new Smoother();
 
     const draw = () => {
       frame = requestAnimationFrame(draw);
@@ -93,10 +94,11 @@ export function TrainMap({ store, segments }: { store: TrainStore; segments: Seg
         revision = store.revision;
         positions = new Float32Array(trains.length * 2);
         angles = new Float32Array(trains.length);
+        smoother.keepOnly(new Set(trains.map((train) => train.rid)));
       }
       const now = store.clock.now();
       for (let i = 0; i < trains.length; i++) {
-        const place = placeTrain(trains[i] as (typeof trains)[number], now, segment);
+        const place = smoother.place(trains[i] as (typeof trains)[number], now, segment);
         positions[i * 2] = place.lon;
         positions[i * 2 + 1] = place.lat;
         angles[i] = -(place.bearing ?? 0); // deck.gl turns anticlockwise; bearings run clockwise

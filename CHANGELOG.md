@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.8.2
+
+### Fixed
+- Trains on the map no longer jump backwards ("rubber banding") when a new position comes in. The map eases each train toward where the server puts it over about 20 s, following the track onto the next segment, and never moves it backwards faster than 3 m/s or forwards faster than 60 m/s. It snaps straight to the new position after a gap of over 10 s, or when the new position isn't on the same or an adjoining segment. On a replay of 24 Nov 07:00–09:00 (9,103 trains), pull-backs of over 50 m in 5 s fell from 9.7 per train-hour to none, and forward jumps from 7.6 to none
+- The position estimator no longer expects a train at a stop sooner than planned + its delay at the last report, even when Darwin's forecast is earlier. Darwin revises forecasts later mid-run much more often than earlier, and each later revision pulled the train back
+- A train running between two stops isn't expected at the second sooner than the median time other trains took over the same pair in the last 30 minutes, if at least two did (`SectionTimes` in `positions.py`, worked out again every minute of clock time). With the change above, on the same replay, the estimator's own pull-backs fell from 9.7 to 7.5 per train-hour, those over 1 km from 2.9 to 1.5, and its median distance from where the train really was from 526 m to 379 m
+
 ## 0.8.1
 
 ### Fixed

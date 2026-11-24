@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TrainPosition } from "../api/client";
-import { fractionAt, placeTrain } from "./motion";
+import { fractionAt, type Placement, placeTrain, Smoother } from "./motion";
 import { makeSegment, pointAlong } from "./segments";
 
 const train = (changes: Partial<TrainPosition> = {}): TrainPosition => ({
@@ -61,6 +61,63 @@ describe("placeTrain", () => {
   it("leaves a dwelling train where the server put it", () => {
     const dwelling = train({ state: "dwelling", to_tiploc: "AAA" });
     expect(placeTrain(dwelling, 0, () => L)).toEqual({ lon: 1.3, lat: 52.6, bearing: 90 });
+  });
+});
+
+describe("Smoother", () => {
+  // AAA>BBB is the L above; BBB>CCC carries on north from its end for about 1.1 km
+  const M = makeSegment([
+    [1.32, 52.61],
+    [1.32, 52.62],
+  ]);
+  const paths = new Map([
+    ["AAA>BBB", L],
+    ["BBB>CCC", M],
+  ]);
+  const segment = (key: string) => paths.get(key);
+  const apart = (a: Placement, b: Placement) => L.ruler.distance([a.lon, a.lat], [b.lon, b.lat]);
+
+  it("lets a train the server moves back drift back slowly instead of jumping", () => {
+    const smoother = new Smoother();
+    const before = smoother.place(train(), Date.parse("2026-11-21T14:05:00Z"), segment); // half way
+    // A later forecast puts it a quarter of the way along
+    const after = smoother.place(
+      train({ due: "2026-11-21T14:20:00Z" }),
+      Date.parse("2026-11-21T14:05:01Z"),
+      segment,
+    );
+    expect(apart(before, after)).toBeGreaterThan(0);
+    expect(apart(before, after)).toBeLessThanOrEqual(3.01);
+  });
+
+  it("follows a train onto its next segment without jumping", () => {
+    const smoother = new Smoother();
+    const end = { left: "2026-11-21T14:00:00Z", due: "2026-11-21T14:05:00Z" };
+    const before = smoother.place(train(end), Date.parse("2026-11-21T14:05:00Z"), segment);
+    expect([before.lon, before.lat]).toEqual([1.32, 52.61]);
+    const next = {
+      from_tiploc: "BBB",
+      to_tiploc: "CCC",
+      left: "2026-11-21T14:04:00Z",
+      due: "2026-11-21T14:09:00Z",
+    };
+    const after = smoother.place(train(next), Date.parse("2026-11-21T14:05:01Z"), segment); // 20% along, 220 m
+    expect(after.lat).toBeGreaterThan(52.61);
+    expect(apart(before, after)).toBeLessThanOrEqual(60.01);
+  });
+
+  it("goes straight to a train the server puts somewhere unconnected, or after a long gap", () => {
+    const smoother = new Smoother();
+    smoother.place(train(), Date.parse("2026-11-21T14:05:00Z"), segment);
+    const elsewhere = train({ state: "dwelling", from_tiploc: "ZZZ", to_tiploc: "ZZZ", lon: 0.5, lat: 51.5 });
+    expect(smoother.place(elsewhere, Date.parse("2026-11-21T14:05:01Z"), segment)).toEqual({
+      lon: 0.5,
+      lat: 51.5,
+      bearing: 90,
+    });
+    smoother.place(train(), Date.parse("2026-11-21T14:05:02Z"), segment);
+    const later = Date.parse("2026-11-21T14:06:00Z");
+    expect(smoother.place(train(), later, segment)).toEqual(placeTrain(train(), later, () => L));
   });
 });
 
