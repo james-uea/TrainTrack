@@ -119,6 +119,9 @@ def run(db: Database, config: Config, today: date | None = None, dry_run: bool =
     result = {"made": [] if dry_run else ensure_partitions(db, today), "expired": []}
     for table in TABLES:
         result["expired"] += expire(db, table, keep[table.table], today, config.archive_dir, dry_run)
+    # Listing partitions opens a transaction even when nothing is dropped. Left open, it stops vacuum clearing dead
+    # rows from every table until the caller's next statement: a day, for the timetable service
+    db.commit()
     return result
 
 

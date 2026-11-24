@@ -3,6 +3,7 @@ import json
 from dataclasses import replace
 from datetime import date, datetime
 
+from psycopg.pq import TransactionStatus
 from psycopg.types.json import Jsonb
 
 import retention
@@ -85,3 +86,10 @@ def test_keep_days_of_zero_keeps_everything(db, tmp_path):
     config = replace(load_config(), events_keep_days=0, archive_dir=str(tmp_path))
     assert retention.run(db, config, date(2026, 11, 22))["expired"] == []
     assert "darwin_events_20200101" in partitions(db)
+
+
+def test_a_run_with_nothing_to_expire_leaves_no_transaction_open(db, tmp_path):
+    # The timetable service sleeps a day after each run; an open transaction would stop vacuum for that long
+    config = replace(load_config(), events_keep_days=14, archive_dir=str(tmp_path))
+    assert retention.run(db, config, date(2026, 11, 22))["expired"] == []
+    assert db.conn.info.transaction_status == TransactionStatus.IDLE
