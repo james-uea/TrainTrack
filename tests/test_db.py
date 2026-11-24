@@ -6,6 +6,7 @@ from conftest import envelope, load_fixture_lines
 from test_darwin import SCHEDULE
 
 from darwin import parse_message, parse_schedule
+from db import TRANSACTION_ATTEMPTS
 from util import LONDON
 
 RID = SCHEDULE["rid"]
@@ -288,3 +289,64 @@ def test_a_forecast_alone_marks_the_train_changed(db):
 
     _, changed = db.fetch_changed_journeys(polled_at)
     assert changed == [RID]
+
+
+def deadlock(db, monkeypatch, method, times):
+    """Make `method` fail the first `times` calls with the error Postgres raises when it breaks a deadlock."""
+    real = getattr(db, method)
+    calls = []
+
+    def aborted(*args):
+        calls.append(method)
+        if len(calls) <= times:
+            db.cur.execute("DO $$ BEGIN RAISE EXCEPTION 'deadlock detected' USING ERRCODE = '40P01'; END $$")
+        return real(*args)
+
+    monkeypatch.setattr(db, method, aborted)
+    monkeypatch.setattr("db.sleep", lambda _: None)
+
+
+def test_a_message_aborted_by_a_deadlock_is_run_again(db, monkeypatch):
+    db.add_schedules([parse_schedule(SCHEDULE)])
+    deadlock(db, monkeypatch, "apply_status", times=1)
+
+    counts = db.handle_message(status({"tpl": "AAA", "wtd": "23:40", "dep": {"at": "23:41"}}))
+
+    assert counts["statuses"] == 1
+    assert stop(db, "AAA", "actual_departure") == (london(2026, 9, 5, 23, 41),)
+    db.cur.execute("SELECT count(*) FROM darwin_events")
+    assert db.cur.fetchone() == (1,)
+
+
+def test_a_message_that_cant_be_applied_is_still_logged(db, monkeypatch):
+    db.add_schedules([parse_schedule(SCHEDULE)])
+    deadlock(db, monkeypatch, "apply_status", times=TRANSACTION_ATTEMPTS)
+
+    counts = db.handle_message(status({"tpl": "AAA", "wtd": "23:40", "dep": {"at": "23:41"}}))
+
+    assert counts["failed"] == 1
+    assert stop(db, "AAA", "actual_departure") == (None,)
+    db.cur.execute("SELECT kinds, rids FROM darwin_events")
+    assert db.cur.fetchall() == [(["TS"], [RID])]
+
+
+def test_a_message_the_code_cant_handle_is_logged_and_doesnt_stop_the_consumer(db, monkeypatch):
+    db.add_schedules([parse_schedule(SCHEDULE)])
+
+    def broken(_status):
+        raise ValueError("unexpected time format")
+
+    monkeypatch.setattr(db, "apply_status", broken)
+    counts = db.handle_message(status({"tpl": "AAA", "wtd": "23:40", "dep": {"at": "23:41"}}))
+
+    assert counts["failed"] == 1 and "lost" not in counts
+    db.cur.execute("SELECT kinds FROM darwin_events")
+    assert db.cur.fetchall() == [(["TS"],)]
+
+
+def test_a_timetable_batch_aborted_by_a_deadlock_is_run_again(db, monkeypatch):
+    deadlock(db, monkeypatch, "_upsert_journeys", times=1)
+    db.add_schedules([parse_schedule(SCHEDULE)])
+    db.cur.execute("SELECT count(*) FROM train_stops WHERE rid = %s", (RID,))
+    assert db.cur.fetchone() == (len(parse_schedule(SCHEDULE).stops),)
+

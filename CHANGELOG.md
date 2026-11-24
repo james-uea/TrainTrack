@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.8.1
+
+### Fixed
+- A Push Port message whose transaction Postgres aborts to break a deadlock (or a serialization conflict) is now tried again, up to 5 attempts in all with a short wait between them, instead of being dropped. The daily timetable reload and the consumer write the same journeys, and on 24 Nov two messages were lost this way during one reload. The timetable load retries an aborted batch the same way instead of failing the day's load
+- A train status now locks its journey before its stops, the same order as the timetable load and schedule messages, so the two deadlock less often
+- A message that still can't be applied, whatever the error, is now written to `darwin_events` on its own so the raw message isn't lost. Nothing in the table marks it unapplied: the consumer logs the error and counts it as `failed` in its stats line, or also `lost` if it couldn't be written either. Before, an error other than a database one stopped the consumer, which then got the same message again on restart
+- `initialise.py` finds the timetable files where RailData's SFTP delivery puts them, `data/PPTimetable/<timestamp>_v8.xml.gz`, as well as hand-downloaded `data/PPTimetable_<timestamp>_v8.xml.gz` files, and loads the newest of either. It skips a file changed in the last 2 minutes, which may still be uploading
+- README: timetable files are delivered over SFTP into a `PPTimetable/` folder, `docker compose up -d db adminer` starts only Postgres and Adminer, and Compose starts four app services, not two
+
 ## 0.8.0
 Milestone 4: replay any day.
 

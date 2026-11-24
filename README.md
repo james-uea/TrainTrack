@@ -15,7 +15,7 @@ config:
     fontFamily: '''Source Code Pro Variable'', monospace'
 ---
 flowchart LR
-    TT["Darwin Timetable Files"] -- FTP --> DATA["data/"]
+    TT["Darwin Timetable Files"] -- SFTP --> DATA["data/"]
     DATA -- "initialise.py" --> DB[("Postgres")]
     PP["Darwin Push Port"] -- "consumer.py" --> EV[("Event log")]
     EV --> DB
@@ -31,7 +31,7 @@ flowchart LR
 - A [RailData](https://raildata.org.uk/) account subscribed to (both currently free):
   - [Darwin Real Time Train Information (Push)](https://raildata.org.uk/dashboard/dataProduct/P-3f10bf96-d8e8-4041-aa5e-d75d82c45c4e/overview)
   - [Darwin Timetable Files](https://raildata.org.uk/dashboard/dataProduct/P-9ca6bc7e-62e1-44d6-b93a-1616f7d2caf8/overview)
-- An FTP server that RailData can deliver the timetable files to
+- An SFTP server that RailData can deliver the timetable files to
 - Python 3.12+ and [uv](https://docs.astral.sh/uv/)
 - Docker (for Postgres with PostGIS)
 - For the map: Node 22+ and [pnpm](https://pnpm.io/), and these files in `data/`:
@@ -41,19 +41,19 @@ flowchart LR
 
 ## Setup
 
-1) Set up an FTP Server (timetable files must end up in `data/` to be loaded)
+1) Set up an SFTP server whose upload folder is `data/`, or is mounted there
 1) Set up a [RailData](https://raildata.org.uk/) account
 1) Subscribe to [Darwin Real Time Train Information (Push)](https://raildata.org.uk/dashboard/dataProduct/P-3f10bf96-d8e8-4041-aa5e-d75d82c45c4e/overview) and take note of your Kafka credentials and configuration
-1) Subscribe to [Darwin Timetable Files](https://raildata.org.uk/dashboard/dataProduct/P-9ca6bc7e-62e1-44d6-b93a-1616f7d2caf8/overview), configure the FTP location to point at the `data/` folder
+1) Subscribe to [Darwin Timetable Files](https://raildata.org.uk/dashboard/dataProduct/P-9ca6bc7e-62e1-44d6-b93a-1616f7d2caf8/overview) and add an SFTP file transfer destination for it. RailData uploads each day's files into a `PPTimetable/` folder inside the destination folder (e.g. `data/PPTimetable/20261123020540_v8.xml.gz`), and that folder must exist before it can. It sends the last week's files as soon as the destination is attached. Files downloaded by hand also work as `data/PPTimetable_<timestamp>_v8.xml.gz` and `_ref_v4.xml.gz`
 1) Copy `.env.example` to `.env` and set the values to the ones RailData provides
-1) Run `docker compose up -d` to launch Postgres and Adminer
+1) Run `docker compose up -d db adminer` (or `./run.sh db`) to launch Postgres and Adminer
 1) Apply database migrations (`uv run src/migrate.py`)
 1) For the map, load the track and locations once (and again when the files change):
    `uv run src/track_model.py`, `uv run src/tiploc_locations.py`, then `uv run src/segment_paths.py` (the timetable loader also routes each new day's stop pairs)
 
 ### Running everything in Docker
 
-`docker compose up -d --build` also starts two app services:
+`docker compose up -d --build` also starts four app services:
 
 - `consumer` applies migrations, then consumes the Push Port continuously (restarts if it crashes)
 - `timetable` loads the timetable from `data/` on start, then again every day at 05:00 UK time
@@ -107,7 +107,7 @@ Raw Push Port messages stay in `darwin_events`, one partition per UK day, for `E
 
 ## Not currently planned
 
-- Darwin supports S3 Buckets in addition to the FTP server, which can also be used to seed the timetable
+- Darwin supports S3 Buckets in addition to SFTP, which can also be used to seed the timetable
 
 ## Changelog
 

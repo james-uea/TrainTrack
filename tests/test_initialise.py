@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import time
 
 from initialise import batched, get_latest, iter_journeys
 
@@ -22,12 +23,35 @@ TIMETABLE = """<?xml version="1.0" encoding="utf-8"?>
 """
 
 
+def delivered(path):
+    """A timetable file that finished uploading an hour ago."""
+    path.write_bytes(b"")
+    an_hour_ago = time.time() - 3600
+    os.utime(path, (an_hour_ago, an_hour_ago))
+
+
 def test_get_latest_finds_gzipped_downloads(tmp_path):
     for name in ("PPTimetable_20261120020000_v8.xml", "PPTimetable_20261121020530_v8.xml.gz",
                  "PPTimetable_20261121020530_ref_v4.xml.gz", "notes.txt"):
-        (tmp_path / name).write_bytes(b"")
+        delivered(tmp_path / name)
     assert get_latest(str(tmp_path)) == str(tmp_path / "PPTimetable_20261121020530_v8.xml.gz")
     assert get_latest(str(tmp_path), ref=True) == str(tmp_path / "PPTimetable_20261121020530_ref_v4.xml.gz")
+
+
+def test_get_latest_looks_in_the_folder_raildata_delivers_to(tmp_path):
+    (tmp_path / "PPTimetable").mkdir()
+    for name in ("PPTimetable_20261122020500_v8.xml.gz", "PPTimetable/20261123020540_v8.xml.gz",
+                 "PPTimetable/20261122020500_ref_v4.xml.gz", "PPTimetable_20261123020540_ref_v4.xml.gz"):
+        delivered(tmp_path / name)
+    assert get_latest(str(tmp_path)) == str(tmp_path / "PPTimetable/20261123020540_v8.xml.gz")
+    assert get_latest(str(tmp_path), ref=True) == str(tmp_path / "PPTimetable_20261123020540_ref_v4.xml.gz")
+
+
+def test_get_latest_skips_a_file_that_may_still_be_uploading(tmp_path):
+    (tmp_path / "PPTimetable").mkdir()
+    delivered(tmp_path / "PPTimetable/20261123020540_v8.xml.gz")
+    (tmp_path / "PPTimetable/20261124020540_v8.xml.gz").write_bytes(b"")  # being written now
+    assert get_latest(str(tmp_path)) == str(tmp_path / "PPTimetable/20261123020540_v8.xml.gz")
 
 
 def test_iter_journeys_streams_plain_and_gzipped_files(tmp_path):
