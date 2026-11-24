@@ -13,7 +13,7 @@ from collections.abc import Iterable, Iterator
 from datetime import datetime, timedelta
 from datetime import time as dtime
 from os import listdir
-from os.path import isfile, join
+from os.path import isdir, isfile, join
 
 from lxml import etree
 
@@ -30,26 +30,25 @@ logger = logging.getLogger("initialise")
 # Journeys are written to the database in batches of this size while the file is streamed
 JOURNEY_BATCH_SIZE = 5000
 
+# The folder RailData delivers timetable files into, and the prefix of files downloaded by hand
+TIMETABLE_FOLDER = "PPTimetable"
+
 
 def get_latest(data_dir: str, ref: bool = False) -> str | None:
-    files = [f for f in listdir(data_dir) if isfile(join(data_dir, f))]
-
+    """
+    The newest timetable file in data_dir. RailData's SFTP delivery puts files in a PPTimetable folder
+    (`PPTimetable/20261123020540_v8.xml.gz`); files downloaded by hand are named `PPTimetable_<timestamp>_v8.xml`.
+    """
     suffix = "_ref_v4" if ref else "_v8"
-    pattern = re.compile(rf'PPTimetable_(\d{{14}}){suffix}\.xml(\.gz)?')
+    pattern = re.compile(rf"{TIMETABLE_FOLDER}[_/](\d{{14}}){suffix}\.xml(\.gz)?")
 
-    latest_date = None
-    latest_file = None
+    names = [f for f in listdir(data_dir) if isfile(join(data_dir, f))]
+    folder = join(data_dir, TIMETABLE_FOLDER)
+    if isdir(folder):
+        names += [f"{TIMETABLE_FOLDER}/{f}" for f in listdir(folder) if isfile(join(folder, f))]
 
-    for file in files:
-        match = pattern.fullmatch(file)
-        if not match:
-            continue
-        date = int(match.group(1))
-        if not latest_date or date > latest_date:
-            latest_date = date
-            latest_file = file
-
-    return join(data_dir, latest_file) if latest_file else None
+    timestamped = [(int(match.group(1)), name) for name in names if (match := pattern.fullmatch(name))]
+    return join(data_dir, max(timestamped)[1]) if timestamped else None
 
 
 def open_timetable(path: str):

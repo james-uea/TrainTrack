@@ -1,7 +1,8 @@
 import logging
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
+from time import sleep
 
 import psycopg
 from psycopg import sql
@@ -31,6 +32,18 @@ MATCH_TOLERANCE = timedelta(minutes=5)
 SINGLE_VISIT_TOLERANCE = timedelta(minutes=15)
 # Keyframes are written every 5 minutes; looking back further than this for one means there's a gap in the frames
 KEYFRAME_REACH = timedelta(minutes=10)
+
+# The timetable reload and the consumer write the same journeys' rows, so they can deadlock; Postgres then
+# aborts one of the two transactions. The aborted one is run again this many times, waiting a little longer
+# each time (0.1 s, 0.2 s, ...). On 24 Nov two consumer messages were lost to this during one reload
+TRANSACTION_ATTEMPTS = 5
+RETRY_WAIT_SECONDS = 0.1
+
+# Errors that mean Postgres aborted a transaction that would succeed if run again (40P01, 40001)
+RETRYABLE_ERRORS = (psycopg.errors.DeadlockDetected, psycopg.errors.SerializationFailure)
+
+# What handle_message counts for the consumer's stats line (plus "failed" for a message it couldn't apply)
+MESSAGE_COUNTS = ("statuses", "unmatched_locations", "added_locations", "unknown_trains", "schedules", "deactivated")
 
 # Live data a stop keeps when its journey's stops are replaced by a newer schedule
 LIVE_COLUMNS = (
@@ -212,6 +225,25 @@ class Database:
         cur = conn.cursor()
         return conn, cur
 
+    def in_transaction[T](self, work: Callable[[], T], what: str) -> T:
+        """
+        Run `work` and commit. If Postgres aborts the transaction to break a deadlock (or a serialization
+        conflict), roll back and run it again from the start, up to TRANSACTION_ATTEMPTS times in all.
+        """
+        for attempt in range(1, TRANSACTION_ATTEMPTS + 1):
+            try:
+                result = work()
+                self.conn.commit()
+                return result
+            except RETRYABLE_ERRORS as error:
+                self.conn.rollback()
+                if attempt == TRANSACTION_ATTEMPTS:
+                    raise
+                logger.warning("%s was aborted (%s), trying again (%d of %d)",
+                               what, error.sqlstate, attempt + 1, TRANSACTION_ATTEMPTS)
+                sleep(RETRY_WAIT_SECONDS * 2 ** (attempt - 1))
+        raise AssertionError("unreachable")
+
     # Reference data
 
     def add_code_maps(self, table, key_col, value_col, code_map):
@@ -296,8 +328,12 @@ class Database:
         Load the day's timetable. A journey that already has stops gets them replaced, carrying live data
         (actuals, forecasts, platform confirmation) over to calls with the same TIPLOC and working times, as
         for a schedule message. So re-running the import mid-day is safe even after schedule messages or
-        Darwin-added passing points have renumbered a journey's stops.
+        Darwin-added passing points have renumbered a journey's stops. A batch that deadlocks with the consumer
+        is run again rather than failing the day's load.
         """
+        self.in_transaction(lambda: self._add_schedules(schedules), f"Timetable batch of {len(schedules)} journeys")
+
+    def _add_schedules(self, schedules: list[Schedule]):
         self.ensure_tiplocs(stop.tiploc for schedule in schedules for stop in schedule.stops)
         self._upsert_journeys(schedules)
         self.cur.execute("CREATE TEMP TABLE new_stops (LIKE train_stops INCLUDING DEFAULTS) ON COMMIT DROP")
@@ -319,7 +355,6 @@ class Database:
         """)
         self.cur.execute("DELETE FROM train_stops WHERE rid IN (SELECT DISTINCT rid FROM new_stops)")
         self.cur.execute("INSERT INTO train_stops SELECT * FROM new_stops")
-        self.conn.commit()
 
     def _upsert_journeys(self, schedules: list[Schedule]):
         self.cur.executemany("""
@@ -344,12 +379,12 @@ class Database:
     # Live updates (from consumer.py)
 
     def handle_message(self, message: PushPortMessage) -> dict[str, int]:
-        """Log a Push Port message and apply everything in it, in one transaction."""
-        counts = {
-            "statuses": 0, "unmatched_locations": 0, "added_locations": 0, "unknown_trains": 0, "schedules": 0,
-            "deactivated": 0,
-        }
-        try:
+        """
+        Log a Push Port message and apply everything in it, in one transaction, run again if it deadlocks.
+        If it still can't be applied, the raw message is logged on its own so the event log stays complete.
+        """
+        def apply() -> dict[str, int]:
+            counts = dict.fromkeys(MESSAGE_COUNTS, 0)
             self.record_event(message)
             for schedule in message.schedules:
                 self.apply_schedule(schedule)
@@ -368,11 +403,19 @@ class Database:
                     (deactivated.rid,),
                 )
                 counts["deactivated"] += 1
-            self.conn.commit()
+            return counts
+
+        try:
+            return self.in_transaction(apply, f"Message {message.sequence}")
         except psycopg.Error:
-            logger.exception("Rolling back message %s", message.sequence)
+            logger.exception("Couldn't apply message %s, logging it unapplied", message.sequence)
             self.conn.rollback()
-        return counts
+        try:
+            self.in_transaction(lambda: self.record_event(message), f"Logging message {message.sequence}")
+        except psycopg.Error:
+            logger.exception("Couldn't log message %s either", message.sequence)
+            self.conn.rollback()
+        return dict.fromkeys(MESSAGE_COUNTS, 0) | {"failed": 1}
 
     def record_event(self, message: PushPortMessage):
         self.cur.execute("""

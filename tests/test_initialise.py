@@ -30,6 +30,15 @@ def test_get_latest_finds_gzipped_downloads(tmp_path):
     assert get_latest(str(tmp_path), ref=True) == str(tmp_path / "PPTimetable_20261121020530_ref_v4.xml.gz")
 
 
+def test_get_latest_looks_in_the_folder_raildata_delivers_to(tmp_path):
+    (tmp_path / "PPTimetable").mkdir()
+    for name in ("PPTimetable_20261122020500_v8.xml.gz", "PPTimetable/20261123020540_v8.xml.gz",
+                 "PPTimetable/20261122020500_ref_v4.xml.gz", "PPTimetable_20261123020540_ref_v4.xml.gz"):
+        (tmp_path / name).write_bytes(b"")
+    assert get_latest(str(tmp_path)) == str(tmp_path / "PPTimetable/20261123020540_v8.xml.gz")
+    assert get_latest(str(tmp_path), ref=True) == str(tmp_path / "PPTimetable_20261123020540_ref_v4.xml.gz")
+
+
 def test_iter_journeys_streams_plain_and_gzipped_files(tmp_path):
     plain = tmp_path / "PPTimetable_20261121020530_v8.xml"
     plain.write_text(TIMETABLE)
