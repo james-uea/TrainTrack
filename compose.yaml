@@ -62,6 +62,17 @@ services:
     depends_on:
       - consumer
 
+  # Stores Network Rail's Train Describer: each train's berth steps, to the second
+  td:
+    build: .
+    restart: unless-stopped
+    command: sh -c "python src/migrate.py && python src/td_consumer.py"
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASS}@db:5432/${POSTGRES_DB}
+    depends_on:
+      - db
+
   # Loads the timetable on start, then again every day after the new files arrive (~04:00), then runs retention.py
   timetable:
     build: .
