@@ -6,7 +6,13 @@ import pytest
 from shapely.geometry import LineString
 
 from darwin import parse_schedule
-from segment_paths import PlacedTiploc, segment_path, update
+from segment_paths import (
+    SIMPLIFY_METRES,
+    PlacedTiploc,
+    SegmentPath,
+    segment_path,
+    update,
+)
 from tiploc_locations import TiplocLocation, to_wgs84
 from track_graph import Link, Snap, TrackGraph
 from track_model import TrackLink, assign_nodes
@@ -196,6 +202,13 @@ def test_segment_paths_for_a_days_timetable(db):
         ("AAA", "BBB", "track", None, 1200, 4326),
         ("BBB", "FAR", "straight", "off_network", 951, 4326),
     ]
+
+
+def test_a_route_that_turns_back_can_be_stored(db):
+    line = LineString([(X + 100, Y), (X + 1000, Y), (X + 940, Y + 4)])
+    db.add_segment_paths([SegmentPath("AAA", "BAY", "track", "reverses", line.length, 840.0, line)], SIMPLIFY_METRES)
+    db.cur.execute("SELECT method, fallback_reason FROM segment_paths")
+    assert db.cur.fetchall() == [("track", "reverses")]
 
 
 def test_a_bplan_point_too_far_from_its_neighbours_is_suspect(db):

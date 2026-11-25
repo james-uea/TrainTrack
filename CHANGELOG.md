@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.11.0
+
+### Fixed
+- Migration `011_segment_paths_reverses.sql` lets `segment_paths` store a track route that turns back on itself (`fallback_reason` "reverses", new in 0.9.0). The check on that column still allowed only the three older reasons, so `segment_paths.py --all` failed on the server at the first such pair (BCKJN to SWELL) and stored nothing. The daily load would have failed the same way at the first new pair that turns back, before it learned berth step points. Run `segment_paths.py --all` again after upgrading
+
 ## 0.10.0
 Milestone 6: Train Describer.
 
