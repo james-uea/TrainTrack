@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.9.0
+
+### Added
+- `src/accuracy.py` measures how far the map was from where trains really were over a recorded day. Every `--every` seconds (60 by default), it puts each train the map showed in metres along its route. It compares that with where the train's actual times put it, at an even pace between reports, taking each actual time as 20 s after its minute (`--truth-offset`). Darwin mostly cuts actual times down to the minute: against Realtime Trains' quarter-minute times for 10 trains on 24 Nov, its minute was 21 s earlier on average. The report gives errors by state, hour and operator, the segments most often over 1 km out, and coverage: trains in service the map missed, and trains shown with nothing to check them against. `--source estimate` runs today's estimator over the database instead of the recorded frames, and `--json` saves the report. A whole day takes about 70 s
+- `Database.fetch_journeys` and `Database.fetch_reported_rids`, which `accuracy.py` uses
+- `segment_paths.py --all` routes every stored stop pair again, not just the day's new ones. Run it once after upgrading so stored paths follow the new routing
+
+### Changed
+- Rail replacement buses and ships (Darwin status B or S, or 5 or 4 for short-term plans) are no longer placed on the map (`OFF_TRACK_STATUSES` in `db.py`). On 24 Nov they were 3,206 journeys and about 7% of what the map showed. A link with `?train=` still opens one
+- Track paths no longer turn back on themselves at a junction. `TrackGraph.route` moves from one track link to the next only where the turn is gentle (`MAX_TURN`, 45°). A stop's route can now start or end on any track within 100 m of its nearest one (was 30 m). Where no route avoids turning back, one that does is kept only if it's at most 1.25 times the straight distance (stored with `fallback_reason` "reverses"). Otherwise the pair is drawn straight. Rerouting the 10,519 stored pairs cut paths over 1.4 times the straight distance from 344 to 111, and paths that turn back by more than 150° from 457 to 23
+- A late train is no longer held short of a call where no train has reported in the last 3 hours, though at least 2 went through it, as on the Far North, Kyle and Cumbrian Coast lines. This is worked out from the trains already in memory, so no list of such calls goes stale
+
 ## 0.8.3
 
 ### Fixed

@@ -3,8 +3,8 @@ How far the map was from where trains really were, over a stretch of a recorded 
 
 Every `--every` seconds, each train on the map is placed in metres along its route and compared with where its actual
 times put it then: at a stop between its reported arrival and departure, or between the last stop it was reported
-leaving and the next it was reported reaching, at an even pace. Darwin's actual times are whole minutes, and most
-are rounded to the nearest one rather than cut down (`--truth-offset` moves them).
+leaving and the next it was reported reaching, at an even pace. Darwin's actual times are whole minutes, mostly cut
+down rather than rounded, so each is taken as TRUTH_OFFSET seconds after its minute (`--truth-offset` changes it).
 
     uv run src/accuracy.py --day 2026-11-24                     # what the map showed, from the recorded frames
     uv run src/accuracy.py --day 2026-11-24 --source estimate   # today's estimator over the database as it is now
@@ -41,9 +41,10 @@ from positions import (
 from util import LONDON
 
 # Seconds added to each actual time to say when the train was really there. Darwin's actual times are whole minutes.
-# Those from train describers (81% on 24 Nov) are rounded to the nearest minute, not cut down: 6% of them were
-# published up to 29 s before their minute began, and none earlier
-TRUTH_OFFSET = 0.0
+# Seconds after its minute that a reported time really happened. Against Realtime Trains' quarter-minute train
+# describer times for 10 trains on 24 Nov (320 calls and passes), Darwin's minute was the RTT time cut down for 74%
+# and rounded for 51%, and 21 s earlier on average
+TRUTH_OFFSET = 20.0
 # Between two reports further apart than this, an even pace says little about where the train was
 MAX_GAP = timedelta(minutes=20)
 # An error over this many metres counts as "far out"
