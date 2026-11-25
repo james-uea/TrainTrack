@@ -14,6 +14,9 @@ Run everything from the repo root: entry points read `.env` from the current dir
 ## Docs vs code
 Where the docs (README, `docs/`) and the code disagree, follow the code's conventions. End your final message with every discrepancy you found.
 
+## Pull requests
+Write each PR's description from `.github/pull_request_template.md`. When PRs are stacked, open each against the one below it and point it at `main` once that one merges.
+
 ## Versioning and changelog
 Every milestone, and every PR that changes behaviour, does four things in the same PR:
 - Bumps the version in `pyproject.toml`. This follows semver; before 1.0, bump the minor version for features or schema changes and the patch version for fixes.
