@@ -838,6 +838,22 @@ class Database:
         """, {"at": at, "rids": rids})
         return self.cur.fetchall()
 
+    def fetch_journeys(self, rids: list[str]) -> list[tuple]:
+        self.cur.execute("""
+            SELECT rid, train_id, toc_code, cancelled, deactivated FROM train_journeys WHERE rid = ANY(%s)
+        """, (rids,))
+        return self.cur.fetchall()
+
+    def fetch_reported_rids(self, start, end) -> list[str]:
+        """Trains with an actual time from `start` to `end`."""
+        self.cur.execute("""
+            SELECT DISTINCT rid FROM train_stops
+            WHERE actual_arrival >= %(start)s AND actual_arrival < %(end)s
+                OR actual_departure >= %(start)s AND actual_departure < %(end)s
+                OR actual_pass >= %(start)s AND actual_pass < %(end)s
+        """, {"start": start, "end": end})
+        return [row[0] for row in self.cur.fetchall()]
+
     def fetch_changed_journeys(self, since) -> tuple[datetime, list[str]]:
         """The database's time now, and the trains changed after `since` (all of them when `since` is None)."""
         self.cur.execute("SELECT clock_timestamp()")
