@@ -84,6 +84,10 @@ Quick starts (`./run.sh` lists them):
   - `--backfill 2026-11-21T13:50Z 2026-11-21T14:51Z` computes frames for a window before recording started (marked `computed`)
 - `uv run src/retention.py`: Make the event log's day partitions ahead, and archive and drop expired days (`--dry-run` to see what it would do)
 - `uv run src/track_model.py`, `uv run src/tiploc_locations.py`, `uv run src/segment_paths.py`: Load the track, place every TIPLOC (hand fixes in `reference/tiploc_overrides.csv`), and route each pair of consecutive stops along the track
+  - `segment_paths.py --all` routes every stored pair again, after a change to the routing
+- `uv run src/accuracy.py --day 2026-11-24`: How far the map was from where trains really were over a recorded day, from the recorded frames
+  - `--start 07:00 --end 10:00` for part of it, `--every 60` seconds between moments, `--json FILE` to save the report
+  - `--source estimate` runs today's estimator over the database instead, to compare two versions of it on the same day
 
 ### The map (`web/`)
 - `pnpm install`, then `pnpm dev` serves the map on http://localhost:5173, calling the API on port 8000 (`TRAINTRACK_API` changes that)

@@ -24,6 +24,11 @@ CALL_TYPES = "('OR', 'IP', 'DT', 'OPOR', 'OPIP', 'OPDT')"
 # Network Rail track) are placed but joined with straight lines; suspect points aren't used
 USABLE_LOCATION = "COALESCE(t.quality IN ('good', 'off_network'), FALSE)"
 
+# Darwin's schedule statuses for a bus (B, or 5 short-term) or a ship (S, or 4 short-term). They don't run on the
+# track and never report, so the map doesn't place them: on 24 Nov they were 3,206 journeys and about 7% of what the
+# map showed, drawn moving along the railway
+OFF_TRACK_STATUSES = ("B", "5", "S", "4")
+
 # How far Darwin's working time for a location may be from the planned one when a train calls or passes
 # somewhere more than once and the times don't match exactly
 MATCH_TOLERANCE = timedelta(minutes=5)
@@ -771,6 +776,10 @@ class Database:
         """, (day,))
         return self.cur.fetchall()
 
+    def fetch_segment_pairs(self) -> list[tuple[str, str]]:
+        self.cur.execute("SELECT from_tiploc, to_tiploc FROM segment_paths ORDER BY 1, 2")
+        return self.cur.fetchall()
+
     def fetch_placed_tiplocs(self, tiplocs, parallel_metres: float) -> list[tuple]:
         """
         (tiploc, easting, northing, snaps) where snaps is a list of (asset_id, along): the nearest track
@@ -820,7 +829,7 @@ class Database:
     def fetch_journeys_around(self, at, rids: list[str] | None = None) -> list[tuple]:
         """
         Journeys whose planned times run from up to 15 minutes after `at` to up to 3 hours before it, optionally
-        only among `rids`.
+        only among `rids`. Buses and ships are left out.
         """
         self.cur.execute("""
             SELECT j.rid, j.train_id, j.toc_code, j.cancelled, j.deactivated
@@ -835,8 +844,25 @@ class Database:
                 AND span.first_time <= %(at)s::timestamptz + INTERVAL '15 minutes'
                 AND span.last_time >= %(at)s::timestamptz - INTERVAL '3 hours'
                 AND (%(rids)s::text[] IS NULL OR j.rid = ANY(%(rids)s::text[]))
-        """, {"at": at, "rids": rids})
+                AND NOT COALESCE(j.status, '') = ANY(%(off_track)s::text[])
+        """, {"at": at, "rids": rids, "off_track": list(OFF_TRACK_STATUSES)})
         return self.cur.fetchall()
+
+    def fetch_journeys(self, rids: list[str]) -> list[tuple]:
+        self.cur.execute("""
+            SELECT rid, train_id, toc_code, cancelled, deactivated, status FROM train_journeys WHERE rid = ANY(%s)
+        """, (rids,))
+        return self.cur.fetchall()
+
+    def fetch_reported_rids(self, start, end) -> list[str]:
+        """Trains with an actual time from `start` to `end`."""
+        self.cur.execute("""
+            SELECT DISTINCT rid FROM train_stops
+            WHERE actual_arrival >= %(start)s AND actual_arrival < %(end)s
+                OR actual_departure >= %(start)s AND actual_departure < %(end)s
+                OR actual_pass >= %(start)s AND actual_pass < %(end)s
+        """, {"start": start, "end": end})
+        return [row[0] for row in self.cur.fetchall()]
 
     def fetch_changed_journeys(self, since) -> tuple[datetime, list[str]]:
         """The database's time now, and the trains changed after `since` (all of them when `since` is None)."""
