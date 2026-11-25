@@ -1,6 +1,6 @@
 """The position estimator, on made-up journeys (no database)."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 from shapely import to_wkb
@@ -155,6 +155,22 @@ def test_a_call_that_never_reports_holds_a_late_train_only_briefly():
     assert (position.state, position.from_tiploc, position.to_tiploc) == ("running", "BBB", "CCC")
     assert position.fraction == pytest.approx(5 / 9)
     assert position.confidence == "low"  # 16 minutes since the last report
+
+
+def test_a_call_no_train_has_reported_at_lately_doesnt_hold_a_late_train():
+    # Two earlier trains went through BBB without a report there, but reported at CCC
+    def through(rid, leaves):
+        stops = simple(AAA={"actual_departure": leaves}, CCC={"actual_arrival": leaves + timedelta(minutes=20)}).stops
+        return Journey(rid, stops)
+    others = [through("A1", t("08:00")), through("A2", t("09:00"))]
+    train = simple(AAA={"actual_departure": t("10:04")})
+    sections = SectionTimes(others, t("10:16"))
+    assert sections.silent == {"BBB"}
+    position = estimate_position(train, t("10:16"), paths, sections)
+    assert (position.state, position.from_tiploc, position.to_tiploc) == ("running", "BBB", "CCC")  # not held at BBB
+    # One train that reported there is enough to hold again
+    reported = Journey("A3", simple(AAA={"actual_departure": t("09:30")}, BBB={"actual_arrival": t("09:40")}).stops)
+    assert SectionTimes([*others, reported], t("10:16")).silent == set()
 
 
 def test_passing_points_without_reports_dont_hold_the_train():

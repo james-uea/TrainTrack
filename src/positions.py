@@ -51,6 +51,11 @@ HOLD_MIN_DELAY: int | None = 3
 # train-hour, and those over 1 km from 2.9 to 1.5 (.memory/rubber-banding-bench.md)
 SECTION_WINDOW = timedelta(minutes=30)
 SECTION_MIN_RUNS = 2
+# A call no train has reported at in this window, though at least SILENT_MIN_TRAINS went through it (they reported
+# further on), doesn't report: a train isn't held short of it. Request stops on the Far North, Kyle and Cumbrian Coast
+# lines held late trains up to 44 km from where they were on 21 Nov
+SILENT_WINDOW = timedelta(hours=3)
+SILENT_MIN_TRAINS = 2
 # How far ahead along the path to look for the bearing (metres)
 BEARING_LOOKAHEAD = 25.0
 
@@ -121,13 +126,16 @@ PathSource = Callable[[str, str], tuple[LineString, str] | None]
 class SectionTimes:
     """
     How long trains have recently taken between consecutive reported stops, from their actual times: the state of
-    the line, which a single train's forecast doesn't know about.
+    the line, which a single train's forecast doesn't know about. Also which calls trains have gone through lately
+    without any reporting there.
     """
 
     def __init__(self, journeys: Iterable[Journey], at: datetime):
         self.runs: dict[tuple[str, str], list[tuple[datetime, float]]] = defaultdict(list)
+        calls: dict[str, list[int]] = defaultdict(lambda: [0, 0])  # TIPLOC -> [trains reported there, went through]
         since = at - SECTION_WINDOW
         for journey in journeys:
+            self._count_calls(journey, at, calls)
             previous: tuple[str, datetime] | None = None  # the latest reported stop: (TIPLOC, when it left)
             for stop in journey.stops:
                 if stop.cancelled or stop.point is None:
@@ -141,6 +149,20 @@ class SectionTimes:
                 if previous and arrived and arrived >= since:
                     self.runs[(previous[0], stop.tiploc)].append((arrived, (arrived - previous[1]).total_seconds()))
                 previous = (stop.tiploc, left) if left and left <= at else None
+
+        self.silent = {tiploc for tiploc, (reported, through) in calls.items()
+                       if reported == 0 and through >= SILENT_MIN_TRAINS}
+
+    @staticmethod
+    def _count_calls(journey: Journey, at: datetime, calls: dict[str, list[int]]):
+        """Count each recent call the train has reached (it reported there or further on) as reported there or not."""
+        def reported(stop: Stop) -> bool:
+            return any(t is not None and t <= at for t in (stop.actual_arrival, stop.actual_departure, stop.actual_pass))
+        latest = next((index for index in range(len(journey.stops) - 1, -1, -1) if reported(journey.stops[index])), None)
+        for stop in journey.stops[:latest + 1] if latest is not None else ():
+            planned = stop.planned_arrival
+            if stop.is_call and not stop.cancelled and planned is not None and planned >= at - SILENT_WINDOW:
+                calls[stop.tiploc][0 if reported(stop) else 1] += 1
 
     def typical_run(self, from_tiploc: str, to_tiploc: str, at: datetime) -> timedelta | None:
         """The median run from one stop to the other among trains that finished it recently, if enough did."""
@@ -312,7 +334,8 @@ def estimate_position(journey: Journey, at: datetime, paths: PathSource,
         due = timeline.arrival(there)
         if due is not None and at >= due:
             late_enough = HOLD_MIN_DELAY is None or (delay is not None and delay >= HOLD_MIN_DELAY)
-            if (there == limit and at < due + HOLD_LIMIT and late_enough
+            reports = sections is None or stops[there].tiploc not in sections.silent
+            if (there == limit and at < due + HOLD_LIMIT and late_enough and reports
                     and not timeline._seen(stops[there].actual_arrival or stops[there].actual_pass)):
                 return _running(stops, here, there, 1.0, "held", paths, confidence, delay, age, leaves or arrived, due)
             continue
