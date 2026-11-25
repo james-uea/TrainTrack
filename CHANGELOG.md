@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.10.0
+Milestone 6: Train Describer.
+
+### Added
+- Network Rail's Train Describer (TD) feed, from the Rail Data Marketplace. Each time a train's headcode moves from one signal berth to the next, the signalling system sends a berth step, nationally about 30 a second on a weekday evening. `src/td_consumer.py` stores every berth step (CA), cancel (CB) and interpose (CC) in `td_steps`, a few at a time, and stores each Kafka offset only once its steps are committed. Signalling state messages (SF, SG, SH) and heartbeats (CT) are counted, not stored. Settings: `TD_KAFKA_SERVER`, `TD_KAFKA_USERNAME`, `TD_KAFKA_PASSWORD`, `TD_KAFKA_GROUP` and `TD_KAFKA_TOPIC` (default `TD_ALL_SIG_AREA`). The topic holds only about 1.8 hours of messages, so an outage longer than that loses steps
+- Migration `010_train_describer.sql`: tables `td_steps` (one partition per UK day, like `darwin_events`) and `td_step_points` (where each step happens, in British National Grid metres, with how many trains placed it, their median distance from it, and the median distance and time to the same train's next step)
+- `src/td.py` parses TD messages; `Database.add_td_steps`, `fetch_td_steps`, `replace_td_step_points` and `fetch_td_step_points`
+- `src/td_berths.py` learns where each berth step happens. When a step's headcode belongs to one running train, where that train's actual times put it at that second (taken as `accuracy.py` takes the truth) is one sample. Where several running trains share the headcode, the one near the area's steps already placed is taken, if only one is. A step is kept once 3 trains placed it within a median 500 m of their median point. The timetable service runs it after each daily load, over the last 3 days of steps (`--days`). From 1 hour 40 minutes of steps on 25 Nov (179,370 steps), it placed 16,530 steps, with a median spread of 163 m; berths were a median 797 m long and took 41 s
+- A `td` service in Compose (applies migrations, then runs `td_consumer.py`), and `./run.sh td`; `./run.sh live` starts it too
+- `TD_KEEP_DAYS` (14): `retention.py` drops `td_steps` partitions older than that, without archiving them
+- `accuracy.py --source estimate --no-berths` runs the estimator without berth steps, to compare
+
+### Changed
+- The position estimator places a running train from its latest berth step, when that step is newer than its last Darwin report, at most 90 s old, and within 300 m of the train's path over its next 4 stops. The train is put at the step's point, then moved on at the berth's usual pace for the step's age, but no further than the berth's usual length, so it waits at the next signal rather than running past it. A train dwelling at a stop or not yet started moves off only once a step puts it at least 300 m past the stop. The live map loads step points every hour and the last 90 s of steps every tick. With no step points stored, the estimator works as before. Against where each train's own berth steps either side put it (20:45–21:15 UTC on 25 Nov, every 30 s, 28,583 train-moments, learned from the steps before 20:45), the median distance fell from 321 m to 88 m, the 95th percentile from 1,599 m to 1,083 m, and moments over 1 km out from 13.6% to 5.8%. Against Darwin's actual times, which are only to the minute, the median fell from 283 m to 245 m and the 95th percentile barely moved (1,178 m to 1,168 m)
+- Migrations take a Postgres advisory lock, so the `consumer` and `td` services starting together don't apply the same migration twice
+
 ## 0.9.0
 
 ### Added
