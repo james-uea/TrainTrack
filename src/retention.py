@@ -3,7 +3,8 @@ Keep the day-partitioned tables in shape: make partitions for the days ahead, an
 
 Raw events older than EVENTS_KEEP_DAYS (default 14) are written to ARCHIVE_DIR (default data/archive) as
 `darwin_events-YYYY-MM-DD.jsonl.gz`, one JSON object per message, then their partition is dropped. Recorded map
-frames are dropped after FRAMES_KEEP_DAYS (default 0, which keeps them forever); they aren't archived.
+frames are dropped after FRAMES_KEEP_DAYS (default 0, which keeps them forever), and Train Describer berth steps
+after TD_KEEP_DAYS (default 14); neither is archived.
 
     uv run src/retention.py [--dry-run]
 
@@ -37,7 +38,8 @@ class Partitioned:
 
 EVENTS = Partitioned("darwin_events", "received_at", archive=True)
 FRAMES = Partitioned("position_frames", "at", archive=False)
-TABLES = (EVENTS, FRAMES)
+TD = Partitioned("td_steps", "at", archive=False)
+TABLES = (EVENTS, FRAMES, TD)
 
 
 def partition_day(name: str) -> date:
@@ -115,7 +117,7 @@ def expire(db: Database, table: Partitioned, keep_days: int, today: date, archiv
 
 def run(db: Database, config: Config, today: date | None = None, dry_run: bool = False) -> dict[str, list[str]]:
     today = today or datetime.now(LONDON).date()
-    keep = {EVENTS.table: config.events_keep_days, FRAMES.table: config.frames_keep_days}
+    keep = {EVENTS.table: config.events_keep_days, FRAMES.table: config.frames_keep_days, TD.table: config.td_keep_days}
     result = {"made": [] if dry_run else ensure_partitions(db, today), "expired": []}
     for table in TABLES:
         result["expired"] += expire(db, table, keep[table.table], today, config.archive_dir, dry_run)

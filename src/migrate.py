@@ -6,11 +6,15 @@ from db import Database
 
 logger = logging.getLogger("migrate")
 
+MIGRATION_LOCK = 1010
+
 MIGRATIONS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "sql", "migrations")
 
 
 def apply_migrations(db: Database, migrations_dir: str = MIGRATIONS_DIR) -> list[str]:
     """Apply pending migrations in one transaction. Returns the ones applied."""
+    # Two services start by migrating; the second waits here for the first, then finds nothing pending
+    db.cur.execute("SELECT pg_advisory_xact_lock(%s)", (MIGRATION_LOCK,))
     db.cur.execute("""
         CREATE TABLE IF NOT EXISTS schema_migrations (
         version TEXT PRIMARY KEY,

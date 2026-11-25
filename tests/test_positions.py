@@ -7,9 +7,11 @@ from shapely import to_wkb
 from shapely.geometry import LineString
 
 from positions import (
+    BerthSteps,
     Journey,
     PathCache,
     SectionTimes,
+    StepPoint,
     Stop,
     estimate_position,
     route,
@@ -270,3 +272,54 @@ def test_a_running_train_says_when_it_left_and_is_due():
     assert position.state == "running"
     assert (position.left, position.due) == (t("10:00"), t("10:10"))
     assert position.fraction == pytest.approx((t("10:02") - position.left) / (position.due - position.left))
+
+
+def berths(*steps, **points):
+    """Berth steps (time, area, from, to, headcode) at known points, given as e.g. R1_0101_0103=StepPoint(...)."""
+    known = BerthSteps({tuple(name.split("_")): point for name, point in points.items()})
+    known.add((at.timestamp(), area, a, b, headcode) for at, area, a, b, headcode in steps)
+    return known
+
+
+def test_a_berth_step_since_the_last_report_places_the_train_and_it_goes_on_no_further_than_the_next():
+    train = simple(AAA={"actual_departure": t("10:00")})
+    # A step 1 km out of AAA at 10:03; trains usually step again 800 m and 40 s later
+    steps = berths((t("10:03"), "R1", "0101", "0103", "1A01"), R1_0101_0103=StepPoint(X + 1000, Y + 20, 800, 40))
+
+    assert estimate_position(train, t("10:03") + timedelta(seconds=20), paths).fraction == pytest.approx(1 / 3)
+    moving = estimate_position(train, t("10:03") + timedelta(seconds=20), paths, berths=steps)
+    assert (moving.state, moving.from_tiploc, moving.to_tiploc) == ("running", "AAA", "BBB")
+    assert moving.fraction == pytest.approx(1400 / 6000)
+    assert (moving.due - moving.left).total_seconds() == pytest.approx(6000 / 20)  # the browser carries on at 20 m/s
+
+    waiting = estimate_position(train, t("10:03") + timedelta(seconds=80), paths, berths=steps)
+    assert waiting.fraction == pytest.approx(1800 / 6000)  # at the next signal: no step yet, so not past it
+    assert waiting.left is None and waiting.due is None
+
+    # After 90 s with no step, the reports place it again
+    stale = estimate_position(train, t("10:05"), paths, berths=steps)
+    assert stale.fraction == pytest.approx(0.5)
+
+
+def test_a_berth_step_is_ignored_before_the_last_report_or_off_the_train_path():
+    train = simple(AAA={"actual_departure": t("10:00")}, BBB={"actual_arrival": t("10:09"), "actual_departure": t("10:11")})
+    old = berths((t("10:03"), "R1", "0101", "0103", "1A01"), R1_0101_0103=StepPoint(X + 1000, Y, 800, 40))
+    assert estimate_position(train, t("10:11") + timedelta(seconds=30), paths, berths=old).from_tiploc == "BBB"
+
+    elsewhere = berths((t("10:12"), "Q1", "0201", "0203", "1A01"), Q1_0201_0203=StepPoint(X - 50000, Y, 800, 40))
+    plain = estimate_position(train, t("10:12") + timedelta(seconds=10), paths)
+    assert estimate_position(train, t("10:12") + timedelta(seconds=10), paths, berths=elsewhere) == plain
+
+
+def test_a_train_at_a_call_stays_there_until_a_step_puts_it_well_along_the_next_segment():
+    train = simple(AAA={"actual_departure": t("10:00")}, BBB={"actual_arrival": t("10:10")})
+    at = t("10:10") + timedelta(seconds=40)
+    platform = berths((t("10:10") + timedelta(seconds=30), "R1", "0110", "0112", "1A01"),
+                      R1_0110_0112=StepPoint(X + 6000, Y + 100, 400, 90))
+    assert estimate_position(train, at, paths, berths=platform).state == "dwelling"
+
+    gone = berths((t("10:10") + timedelta(seconds=30), "R1", "0112", "0114", "1A01"),
+                  R1_0112_0114=StepPoint(X + 6000, Y + 500, 800, 40))
+    position = estimate_position(train, at, paths, berths=gone)
+    assert (position.state, position.from_tiploc, position.to_tiploc) == ("running", "BBB", "CCC")
+    assert position.fraction == pytest.approx(700 / 4000)

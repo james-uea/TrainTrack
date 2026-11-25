@@ -1082,6 +1082,37 @@ class Database:
         """)
         return self.cur.fetchall()
 
+    # Train Describer (td_consumer.py, td_berths.py)
+
+    def add_td_steps(self, steps: list):
+        with self.cur.copy("COPY td_steps (at, area_id, from_berth, to_berth, descr, msg_type) FROM STDIN") as copy:
+            for step in steps:
+                copy.write_row((step.at, step.area_id, step.from_berth, step.to_berth, step.descr, step.msg_type))
+
+    def fetch_td_steps(self, start, end, msg_type: str = "CA") -> list[tuple]:
+        """(epoch seconds, area, from berth, to berth, headcode) for each step of `msg_type` from `start` to before `end`, in time order."""
+        self.cur.execute("""
+            SELECT extract(epoch FROM at)::FLOAT8, area_id, from_berth, to_berth, descr
+            FROM td_steps WHERE at >= %s AND at < %s AND msg_type = %s ORDER BY at
+        """, (start, end, msg_type))
+        return self.cur.fetchall()
+
+    def replace_td_step_points(self, points: list[tuple]):
+        """Replace every learned step point with (area, from, to, x, y, samples, spread_m, next_metres, next_seconds) rows."""
+        self.cur.execute("TRUNCATE td_step_points")
+        with self.cur.copy("""
+            COPY td_step_points (area_id, from_berth, to_berth, x, y, samples, spread_m, next_metres, next_seconds)
+            FROM STDIN
+        """) as copy:
+            for row in points:
+                copy.write_row(row)
+
+    def fetch_td_step_points(self) -> list[tuple]:
+        self.cur.execute("""
+            SELECT area_id, from_berth, to_berth, x, y, samples, spread_m, next_metres, next_seconds FROM td_step_points
+        """)
+        return self.cur.fetchall()
+
     # Day partitions (retention.py)
 
     def ensure_day_partition(self, parent: str, key_column: str, day) -> bool:

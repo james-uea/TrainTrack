@@ -20,6 +20,7 @@ from psycopg.pq import TransactionStatus
 
 import retention
 import segment_paths
+import td_berths
 from config import load_config
 from coverage_report import summary_line
 from darwin import SCHEDULE_STOP_TYPES, Schedule, ScheduleStop
@@ -228,6 +229,12 @@ def run(db: Database, data_dir: str):
     today = datetime.now(LONDON).date()
     logger.info("Coverage today: %s", summary_line(db.fetch_coverage(today)))
     segment_paths.update(db, today)  # track paths for stop pairs not seen before
+    try:
+        td_berths.update(db)  # where berth steps happen, from the last few days' trains
+    except Exception:  # the timetable is loaded; the old step points still work
+        logger.exception("Learning berth step points failed")
+        if db.conn.info.transaction_status != TransactionStatus.IDLE:
+            db.rollback()
 
 
 def seconds_until(at: dtime) -> float:

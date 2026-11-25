@@ -30,6 +30,8 @@ class FakeDatabase:
         self.meta = {"A": ("A", "1A01", "LE", False, False), "B": ("B", "1B01", "LE", False, False)}
         self.changed: list[str] = []
         self.stop_loads: list[list[str]] = []
+        self.step_points: list[tuple] = []
+        self.steps: list[tuple] = []
         self.conn = self
 
     def rollback(self):
@@ -51,6 +53,12 @@ class FakeDatabase:
             if in_window and (rids is None or rid in rids):
                 rows.append(self.meta[rid])
         return rows
+
+    def fetch_td_step_points(self):
+        return self.step_points
+
+    def fetch_td_steps(self, start, end):
+        return [step for step in self.steps if start.timestamp() <= step[0] < end.timestamp()]
 
     def fetch_position_stops(self, rids):
         self.stop_loads.append(sorted(rids))
@@ -110,3 +118,18 @@ def test_the_window_moves_with_the_clock():
     clock.step(timedelta(hours=4))  # both long finished
     live.tick()
     assert live.journeys == {}
+
+
+def test_berth_steps_place_trains_and_follow_the_clock():
+    db = FakeDatabase()
+    x, y = POINTS["AAA"]
+    db.step_points = [("R1", "0101", "0103", x + 1000, y, 3, 10.0, 800.0, 40.0)]
+    db.steps = [((START + timedelta(minutes=3)).timestamp(), "R1", "0101", "0103", "1A01")]
+    clock = SteppedClock(START + timedelta(minutes=3, seconds=20))
+    live = LivePositions(db, clock)
+    snapshot = live.tick()
+    assert snapshot.positions[0][1].fraction == pytest.approx(1400 / 6000)  # 1 km out, then 20 s at 20 m/s
+
+    clock.step(timedelta(hours=1))  # a jump: steps from before it are dropped
+    live.tick()
+    assert live.berths.recent == {}
