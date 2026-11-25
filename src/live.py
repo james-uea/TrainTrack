@@ -22,10 +22,13 @@ from datetime import UTC, datetime, timedelta
 from config import load_config
 from db import Database
 from positions import (
+    BERTH_WINDOW,
+    BerthSteps,
     Journey,
     PathCache,
     Position,
     SectionTimes,
+    StepPoint,
     Stop,
     estimate_position,
     segment_line,
@@ -41,6 +44,8 @@ WINDOW_REFRESH = timedelta(seconds=60)
 SECTIONS_REFRESH = timedelta(seconds=60)
 # How often (in real time) to reload segment paths, which the daily timetable load adds to
 PATHS_REFRESH = 15 * 60.0
+# How often (in real time) to reload where berth steps happen, which td_berths.py relearns daily
+BERTHS_REFRESH = 60 * 60.0
 # The consumer stamps updated_at when its transaction starts, which can be a moment before it commits, so each
 # poll looks back a little further than the last one to avoid missing a change
 POLL_OVERLAP = timedelta(seconds=10)
@@ -109,6 +114,9 @@ class LivePositions:
         self.sections: SectionTimes | None = None
         self._sections_at: datetime | None = None
         self._polled_at: datetime | None = None
+        self.berths: BerthSteps | None = None
+        self._berths_loaded: float | None = None
+        self._steps_until: datetime | None = None
 
     def tick(self) -> Snapshot:
         at = self.clock.now()
@@ -131,6 +139,10 @@ class LivePositions:
             elif changed:
                 self._reload(at, changed)
                 timings["reload"] = time.perf_counter() - mark
+
+            mark = time.perf_counter()
+            self._refresh_berths(at)
+            timings["berths"] = time.perf_counter() - mark
         finally:
             # Reads open a transaction; end it so the next tick sees new commits (and now() moves on)
             self.db.conn.rollback()
@@ -147,7 +159,7 @@ class LivePositions:
             if service_status(journey, at) != "active":
                 continue
             active += 1
-            if (position := estimate_position(journey, at, self.paths, self.sections)) is not None:
+            if (position := estimate_position(journey, at, self.paths, self.sections, self.berths)) is not None:
                 positions.append((journey, position))
         timings["estimate"] = time.perf_counter() - mark
         timings["total"] = time.perf_counter() - started
@@ -163,6 +175,25 @@ class LivePositions:
         if changed:
             logger.debug("%d trains changed", len(changed))
         return changed
+
+    def _refresh_berths(self, at: datetime):
+        """Keep the last BERTH_WINDOW of Train Describer steps before `at`, for steps whose points are known."""
+        if self._berths_loaded is None or time.monotonic() - self._berths_loaded > BERTHS_REFRESH:
+            points = {(area, a, b): StepPoint(x, y, next_metres, next_seconds)
+                      for area, a, b, x, y, _, _, next_metres, next_seconds in self.db.fetch_td_step_points()}
+            self.berths = BerthSteps(points) if points else None
+            self._berths_loaded, self._steps_until = time.monotonic(), None
+        if self.berths is None:
+            return
+        start = at - BERTH_WINDOW
+        if self._steps_until is None or not start <= self._steps_until <= at:
+            self.berths.clear()  # the first time, or the clock jumped
+            since = start
+        else:
+            since = self._steps_until - POLL_OVERLAP  # steps are committed a moment after they happen
+        self.berths.add(self.db.fetch_td_steps(since, at))
+        self.berths.prune(start)
+        self._steps_until = at
 
     def _refresh_window(self, at: datetime):
         """Reload the set of trains around `at`: new ones are loaded, finished ones dropped."""

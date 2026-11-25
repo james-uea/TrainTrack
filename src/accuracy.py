@@ -30,9 +30,12 @@ from config import load_config
 from db import OFF_TRACK_STATUSES, Database
 from frames import fraction_at, unpack
 from positions import (
+    BERTH_WINDOW,
+    BerthSteps,
     Journey,
     PathCache,
     SectionTimes,
+    StepPoint,
     Stop,
     _path,
     estimate_position,
@@ -40,7 +43,6 @@ from positions import (
 )
 from util import LONDON
 
-# Seconds added to each actual time to say when the train was really there. Darwin's actual times are whole minutes.
 # Seconds after its minute that a reported time really happened. Against Realtime Trains' quarter-minute train
 # describer times for 10 trains on 24 Nov (320 calls and passes), Darwin's minute was the RTT time cut down for 74%
 # and rounded for 51%, and 21 s earlier on average
@@ -200,8 +202,12 @@ def frame_moments(rows: Iterable[tuple], times: list[datetime]) -> Iterator[tupl
             yield at, {rid: {**train, "fraction": fraction_at(train, at)} for rid, train in trains.items()}
 
 
-def estimate_moments(journeys: list[Journey], paths, times: list[datetime]) -> Iterator[tuple[datetime, dict[str, dict]]]:
-    """The trains today's estimator places at each of `times`, as the live map would, from the journeys given."""
+def estimate_moments(journeys: list[Journey], paths, times: list[datetime],
+                     berths: BerthSteps | None = None) -> Iterator[tuple[datetime, dict[str, dict]]]:
+    """
+    The trains today's estimator places at each of `times`, as the live map would, from the journeys given and, if
+    `berths` is given, their Train Describer steps.
+    """
     spans = []
     for journey in journeys:
         planned = [t for stop in journey.stops for t in (stop.planned_departure, stop.planned_arrival) if t]
@@ -212,7 +218,7 @@ def estimate_moments(journeys: list[Journey], paths, times: list[datetime]) -> I
         sections = SectionTimes(around, at)
         trains = {}
         for journey in around:
-            position = estimate_position(journey, at, paths, sections)
+            position = estimate_position(journey, at, paths, sections, berths)
             if position is not None:
                 trains[journey.rid] = {"state": position.state, "from_tiploc": position.from_tiploc,
                                        "to_tiploc": position.to_tiploc, "fraction": position.fraction}
@@ -352,6 +358,17 @@ def load_routes(db: Database, rids: list[str], paths,
     return [j for rid, j in journeys.items() if rid not in off_track], routes, frozenset(off_track)
 
 
+def load_berths(db: Database, start: datetime, end: datetime) -> BerthSteps | None:
+    """The Train Describer steps from `start` to `end` whose points are known, or None if none are."""
+    points = {(area, a, b): StepPoint(x, y, next_metres, next_seconds)
+              for area, a, b, x, y, _, _, next_metres, next_seconds in db.fetch_td_step_points()}
+    if not points:
+        return None
+    berths = BerthSteps(points)
+    berths.add(db.fetch_td_steps(start, end))
+    return berths
+
+
 def window(day: date, start: str | None, end: str | None) -> tuple[datetime, datetime]:
     """A stretch of a UK day, from HH:MM to HH:MM (default: the whole day)."""
     midnight = datetime.combine(day, datetime.min.time(), LONDON)
@@ -372,6 +389,8 @@ def main(argv: list[str] | None = None, progress: Callable[[str], None] = print)
     parser.add_argument("--source", choices=("frames", "estimate"), default="frames")
     parser.add_argument("--truth-offset", type=float, default=TRUTH_OFFSET,
                         help="seconds added to each actual time (default: %(default)s)")
+    parser.add_argument("--no-berths", action="store_true",
+                        help="with --source estimate, leave out Train Describer berth steps")
     parser.add_argument("--json", metavar="FILE", help="write the report as JSON")
     args = parser.parse_args(argv)
     start, end = window(args.day, args.start, args.end)
@@ -386,6 +405,9 @@ def main(argv: list[str] | None = None, progress: Callable[[str], None] = print)
         for _, _, _, data in frames:
             rids.update(train["rid"] for train in unpack(data)["trains"])
         journeys, routes, off_track = load_routes(db, sorted(rids), paths, args.truth_offset)
+        berths = None
+        if args.source == "estimate" and not args.no_berths:
+            berths = load_berths(db, start - BERTH_WINDOW, end)
     finally:
         db.close()
     progress(f"Loaded {len(frames):,} frames and {len(routes):,} journeys in {time.perf_counter() - began:.1f} s")
@@ -393,11 +415,12 @@ def main(argv: list[str] | None = None, progress: Callable[[str], None] = print)
     if args.source == "frames":
         moments = frame_moments(frames, times)
     else:
-        moments = estimate_moments([j for j in journeys if service_status(j, end) != "cancelled"], paths, times)
+        moments = estimate_moments([j for j in journeys if service_status(j, end) != "cancelled"], paths, times, berths)
     tally = measure(moments, routes, off_track)
     result = report(tally)
     result["run"] = {"day": args.day.isoformat(), "start": start.isoformat(), "end": end.isoformat(),
                      "every_s": args.every, "source": args.source, "truth_offset_s": args.truth_offset,
+                     "berth_steps": bool(berths and berths.recent),
                      "seconds": round(time.perf_counter() - began, 1)}
     print_report(result, f"{args.source} {start:%Y-%m-%d %H:%M}-{end:%H:%M} UK, every {args.every} s, "
                          f"truth = actual minute + {args.truth_offset:g} s")

@@ -19,6 +19,7 @@ flowchart LR
     DATA -- "initialise.py" --> DB[("Postgres")]
     PP["Darwin Push Port"] -- "consumer.py" --> EV[("Event log")]
     EV --> DB
+    TD["Train Describer"] -- "td_consumer.py" --> DB
     TM["Track Model, NaPTAN, BPLAN"] -- "track_model.py, tiploc_locations.py, segment_paths.py" --> DB
     DB --> TUI["Terminal UI"]
     DB -- "recorder.py" --> FR[("Recorded frames")]
@@ -44,6 +45,7 @@ flowchart LR
 1) Set up an SFTP server whose upload folder is `data/`, or is mounted there
 1) Set up a [RailData](https://raildata.org.uk/) account
 1) Subscribe to [Darwin Real Time Train Information (Push)](https://raildata.org.uk/dashboard/dataProduct/P-3f10bf96-d8e8-4041-aa5e-d75d82c45c4e/overview) and take note of your Kafka credentials and configuration
+1) Optionally, subscribe to Network Rail's [Train Describer](https://wiki.openraildata.com/index.php?title=TD) on RailData and set the `TD_*` values in `.env`. Its berth steps place trains between stations more closely
 1) Subscribe to [Darwin Timetable Files](https://raildata.org.uk/dashboard/dataProduct/P-9ca6bc7e-62e1-44d6-b93a-1616f7d2caf8/overview) and add an SFTP file transfer destination for it. RailData uploads each day's files into a `PPTimetable/` folder inside the destination folder (e.g. `data/PPTimetable/20261123020540_v8.xml.gz`), and that folder must exist before it can. It sends the last week's files as soon as the destination is attached. Files downloaded by hand also work as `data/PPTimetable_<timestamp>_v8.xml.gz` and `_ref_v4.xml.gz`
 1) Copy `.env.example` to `.env` and set the values to the ones RailData provides
 1) Run `docker compose up -d db adminer` (or `./run.sh db`) to launch Postgres and Adminer
@@ -53,10 +55,11 @@ flowchart LR
 
 ### Running everything in Docker
 
-`docker compose up -d --build` also starts four app services:
+`docker compose up -d --build` also starts five app services:
 
 - `consumer` applies migrations, then consumes the Push Port continuously (restarts if it crashes)
-- `timetable` loads the timetable from `data/` on start, then again every day at 05:00 UK time
+- `td` stores every Train Describer berth step in `td_steps`
+- `timetable` loads the timetable from `data/` on start, then again every day at 05:00 UK time, then learns where berth steps happen from the last 3 days of steps
 - `recorder` records what the map shows every 5 s, so any moment can be replayed
 - `api` serves live positions, replay and the map on http://localhost:8000 (`MAP_CLOCK` in `.env` can replay a past moment)
 
@@ -67,13 +70,15 @@ Quick starts (`./run.sh` lists them):
 - `./run.sh db`: Postgres and Adminer; `./run.sh up`: everything in Docker; `./run.sh down`: stop them
 - `./run.sh dev`: the database, then the API and the map's dev server (http://localhost:5173); Ctrl+C stops both
 - `./run.sh replay [ISO time]`: the same, replaying a past moment; `./run.sh live`: the same plus the consumer and the recorder
-- `./run.sh api [clock]`, `./run.sh web`, `./run.sh consumer`, `./run.sh recorder`: one part on its own
+- `./run.sh api [clock]`, `./run.sh web`, `./run.sh consumer`, `./run.sh td`, `./run.sh recorder`: one part on its own
 - `./run.sh backfill [FROM TO]`: compute replay frames for a past window (default 21 Nov 13:50–14:51 UTC)
 
 - `uv run src/migrate.py`: Apply all pending database migrations from `sql/`
 - `uv run src/initialise.py`: Seed the journey and reference tables from the daily timetable (`data/`, configure [Darwin Timetable Files](https://raildata.org.uk/dashboard/dataProduct/P-9ca6bc7e-62e1-44d6-b93a-1616f7d2caf8/overview) to point here). **Run this before you run `consumer.py`**
 - `uv run src/consumer.py`: Run the main consumer. Every Push Port message is stored in `darwin_events`, then applied: train statuses (actual and forecast times, platforms, late reasons), new or changed schedules, and deactivations
   - `--record FILE` also saves every raw message to `FILE`, which is useful for building test fixtures
+- `uv run src/td_consumer.py`: Store every Train Describer berth step, cancel and interpose in `td_steps`
+- `uv run src/td_berths.py`: Learn where each berth step happens, from where Darwin's actual times put the trains that made it (`--days 3`). The map then places a train from its latest step, until Darwin reports it again
 - `uv run src/initialise.py --daily 05:00`: Load the timetable now, then again every day at that time
 - `uv run pytest`: Run the tests. Database tests need `TEST_DATABASE_URL` pointing at a database that can be wiped
 - `uv run src/search.py`: Run the train data viewer (CLI)
@@ -87,7 +92,7 @@ Quick starts (`./run.sh` lists them):
   - `segment_paths.py --all` routes every stored pair again, after a change to the routing
 - `uv run src/accuracy.py --day 2026-11-24`: How far the map was from where trains really were over a recorded day, from the recorded frames
   - `--start 07:00 --end 10:00` for part of it, `--every 60` seconds between moments, `--json FILE` to save the report
-  - `--source estimate` runs today's estimator over the database instead, to compare two versions of it on the same day
+  - `--source estimate` runs today's estimator over the database instead, to compare two versions of it on the same day; `--no-berths` leaves out berth steps
 
 ### The map (`web/`)
 - `pnpm install`, then `pnpm dev` serves the map on http://localhost:5173, calling the API on port 8000 (`TRAINTRACK_API` changes that)
@@ -101,7 +106,7 @@ Quick starts (`./run.sh` lists them):
 
 Replay plays back what the map showed, recorded as it happened by `recorder.py` into `position_frames`: a keyframe of every train every 5 minutes, and each 5 s tick's changes in between (about 55 MB a day). The consumer overwrites train times in place, so the past can't be rebuilt reliably from the database later. For moments before recording started, `recorder.py --backfill` computes frames from the database as it is now; these are marked `computed`, and later forecasts or cancellations can show through in them. Where there are no frames at all, the map shows positions computed on request, marked "not recorded".
 
-Raw Push Port messages stay in `darwin_events`, one partition per UK day, for `EVENTS_KEEP_DAYS` (14). After that `retention.py` writes each day to `data/archive/darwin_events-YYYY-MM-DD.jsonl.gz` (about 120 bytes a message, roughly 250 MB a day) and drops its partition. Frames are kept forever unless `FRAMES_KEEP_DAYS` is set.
+Raw Push Port messages stay in `darwin_events`, one partition per UK day, for `EVENTS_KEEP_DAYS` (14). After that `retention.py` writes each day to `data/archive/darwin_events-YYYY-MM-DD.jsonl.gz` (about 120 bytes a message, roughly 250 MB a day) and drops its partition. Frames are kept forever unless `FRAMES_KEEP_DAYS` is set. Berth steps in `td_steps` (about 2,000 a minute on a weekday evening) are dropped after `TD_KEEP_DAYS` (14), unarchived.
 
 ## Planned work
 

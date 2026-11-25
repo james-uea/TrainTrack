@@ -9,6 +9,7 @@ so the live map and a replay of past data can both use it.
 """
 
 import argparse
+import bisect
 import json
 import statistics
 import time
@@ -20,7 +21,7 @@ from itertools import pairwise
 
 import shapely
 from pyproj import Geod, Transformer
-from shapely.geometry import LineString
+from shapely.geometry import LineString, Point
 
 from config import load_config
 from db import Database
@@ -58,6 +59,23 @@ SILENT_WINDOW = timedelta(hours=3)
 SILENT_MIN_TRAINS = 2
 # How far ahead along the path to look for the bearing (metres)
 BEARING_LOOKAHEAD = 25.0
+# Train Describer: a train's latest berth step, where td_berths.py has learned where it happens, places the train
+# more closely than its Darwin reports: at the signal it last passed, then on at the usual pace from there, never
+# past where trains usually step again. Steps before the train's latest Darwin report aren't used, nor steps older
+# than BERTH_WINDOW, after which the train has more likely stepped somewhere not yet learned than stood still. On
+# 25 Nov 20:15-21:00, with steps learned from 19:07-20:15, running trains' p95 error against their own later steps
+# fell from 1,698 m to 1,056 m (median 337 m to 79 m); 90 s did better than 10, 3 or 1 minutes
+BERTH_WINDOW = timedelta(seconds=90)
+# A step counts for a train if its point is this close to the train's path (metres), within this many placed stops
+# beyond its latest report; only its newest few steps are tried
+BERTH_MATCH_METRES = 300.0
+BERTH_LOOKAHEAD = 4
+BERTH_TRIES = 3
+# A train standing at a call counts as gone once a step puts it this far along the next segment (metres)
+DEPARTED_METRES = 300.0
+# Where a step's next step isn't known: how far a train may go past it, and at what pace (metres, m/s)
+DEFAULT_BERTH_METRES = 1000.0
+DEFAULT_BERTH_PACE = 20.0
 
 TO_WGS84 = Transformer.from_crs("EPSG:27700", "EPSG:4326", always_xy=True)
 TO_GRID = Transformer.from_crs("EPSG:4326", "EPSG:27700", always_xy=True)
@@ -172,6 +190,71 @@ class SectionTimes:
         return timedelta(seconds=statistics.median(recent))
 
 
+
+@dataclass(frozen=True)
+class StepPoint:
+    """Where a berth step happens (British National Grid), and the usual distance and time to a train's next step."""
+    x: float
+    y: float
+    next_metres: float | None = None
+    next_seconds: float | None = None
+
+    @property
+    def berth_metres(self) -> float:
+        return self.next_metres or DEFAULT_BERTH_METRES
+
+    @property
+    def pace(self) -> float:
+        if self.next_metres and self.next_seconds:
+            return self.next_metres / self.next_seconds
+        return DEFAULT_BERTH_PACE
+
+
+class BerthSteps:
+    """Trains' recent Train Describer berth steps by headcode, for the steps whose points are known."""
+
+    def __init__(self, points: dict[tuple[str, str, str], StepPoint]):
+        self.points = points
+        self.recent: dict[str, list[tuple[float, StepPoint]]] = defaultdict(list)
+        self._seen: set[tuple] = set()
+        self._fixes: dict[tuple[str, float], tuple[int, int, float] | None] = {}  # (rid, step time) -> segment, metres
+
+    def add(self, rows: Iterable[tuple]):
+        """Add (epoch seconds, area, from berth, to berth, headcode) steps; ones already added are skipped."""
+        for row in rows:
+            if row in self._seen:
+                continue
+            self._seen.add(row)
+            point = self.points.get(row[1:4])
+            if point is not None:
+                bisect.insort(self.recent[row[4]], (row[0], point), key=lambda step: step[0])
+
+    def prune(self, before: datetime):
+        """Forget steps made before `before`."""
+        cutoff = before.timestamp()
+        for headcode in list(self.recent):
+            steps = self.recent[headcode]
+            del steps[:bisect.bisect_left(steps, cutoff, key=lambda step: step[0])]
+            if not steps:
+                del self.recent[headcode]
+        self._seen = {row for row in self._seen if row[0] >= cutoff}
+        self._fixes = {key: fix for key, fix in self._fixes.items() if key[1] >= cutoff}
+
+    def clear(self):
+        self.recent.clear()
+        self._seen.clear()
+        self._fixes.clear()
+
+    def latest(self, headcode: str | None, at: datetime) -> list[tuple[float, StepPoint]]:
+        """The headcode's newest steps at or before `at` and within BERTH_WINDOW of it, newest first."""
+        steps = self.recent.get(headcode) if headcode else None
+        if not steps:
+            return []
+        end = bisect.bisect_right(steps, at.timestamp(), key=lambda step: step[0])
+        oldest = (at - BERTH_WINDOW).timestamp()
+        return [step for step in reversed(steps[max(0, end - BERTH_TRIES):end]) if step[0] >= oldest]
+
+
 @dataclass
 class _Timeline:
     """A journey's stops with the times to use at one moment: actuals so far, then forecasts or planned + delay."""
@@ -276,11 +359,80 @@ def service_status(journey: Journey, at: datetime) -> str:
 
 
 def estimate_position(journey: Journey, at: datetime, paths: PathSource,
-                      sections: SectionTimes | None = None) -> Position | None:
+                      sections: SectionTimes | None = None, berths: BerthSteps | None = None) -> Position | None:
     """
     Where the train is at `at`, or None if it isn't running then (or none of its stops can be placed). `sections`,
-    other trains' recent run times, keeps a train from being expected sooner than the line is running.
+    other trains' recent run times, keeps a train from being expected sooner than the line is running. `berths`,
+    trains' recent Train Describer steps, places a train that has stepped since its latest Darwin report.
     """
+    position = _from_reports(journey, at, paths, sections)
+    if position is None or berths is None or position.state == "terminated":
+        return position
+    return _from_berths(journey, at, paths, berths, position) or position
+
+
+def _from_berths(journey: Journey, at: datetime, paths: PathSource, berths: BerthSteps,
+                 position: Position) -> Position | None:
+    """The train placed from its latest berth step, if one made since its latest report lies on its path ahead."""
+    recent = berths.latest(journey.train_id, at)
+    if not recent:
+        return None
+    stops = [stop for stop in journey.stops if not stop.cancelled]
+    timeline = _Timeline(stops, at)
+    placed = [index for index, stop in enumerate(stops) if stop.point is not None]
+    first = 0
+    if timeline.reported is not None:
+        first = max((k for k, index in enumerate(placed) if index <= timeline.reported), default=0)
+    ahead = list(pairwise(placed[first:first + BERTH_LOOKAHEAD + 1]))
+    after = timeline.reported_at.timestamp() if timeline.reported_at else None
+
+    fix = None
+    for t, point in recent:
+        if after is not None and t < after:
+            break
+        key = (journey.rid, t)
+        if key not in berths._fixes:
+            berths._fixes[key] = _on_path(point, stops, ahead, paths)
+        if (found := berths._fixes[key]) is not None:
+            fix = (*found, t, point)
+            break
+    if fix is None:
+        return None
+    here, there, along, t, point = fix
+    standing = position.state in ("dwelling", "not_started")
+    if standing and not (stops[here].tiploc == position.from_tiploc and along >= DEPARTED_METRES):
+        return None  # still standing there, as far as the steps say
+
+    line, method = _path(stops[here], stops[there], paths)
+    length = line.length
+    advance = min(point.berth_metres, point.pace * max((at.timestamp() - t), 0.0))
+    distance = min(along + advance, length)
+    fraction = distance / length if length > 0 else 1.0
+    left = due = None
+    if advance < point.berth_metres and distance < length and length > 0:
+        # The browser moves the train on at the same pace until the next update
+        left = at - timedelta(seconds=distance / point.pace)
+        due = left + timedelta(seconds=length / point.pace)
+    (x, y), bearing = _point_on(line, fraction)
+    lon, lat = TO_WGS84.transform(x, y)
+    return Position(lat, lon, bearing, "running", "medium" if method == "straight" else "high", stops[here].tiploc,
+                    stops[there].tiploc, fraction, position.delay_minutes, position.last_report_age_s, left, due)
+
+
+def _on_path(point: StepPoint, stops: list[Stop], ahead: list[tuple[int, int]],
+             paths: PathSource) -> tuple[int, int, float] | None:
+    """The first segment ahead that passes within BERTH_MATCH_METRES of `point`, and how far along it the point is."""
+    spot = Point(point.x, point.y)
+    for here, there in ahead:
+        line, _ = _path(stops[here], stops[there], paths)
+        if line.distance(spot) <= BERTH_MATCH_METRES:
+            return here, there, line.project(spot)
+    return None
+
+
+def _from_reports(journey: Journey, at: datetime, paths: PathSource,
+                  sections: SectionTimes | None = None) -> Position | None:
+    """Where the train is from its stops' actual, forecast and planned times."""
     if service_status(journey, at) != "active":
         return None
     stops = [stop for stop in journey.stops if not stop.cancelled]
