@@ -29,7 +29,7 @@ def network():
         link("up2", (1000, 0), (2000, 0), from_node=2, to_node=3),
         link("down", (0, 4), (2000, 4), from_node=4, to_node=5),
         link("xover", (2000, 0), (2000, 4), from_node=3, to_node=5),
-        link("loop", (2000, 0), (2000, 3000), (-10, 3000), (-10, 10), from_node=3, to_node=6),
+        link("loop", (2000, 0), (2100, 20), (2100, 3000), (-10, 3000), (-10, 10), from_node=3, to_node=6),
         link("siding", (5000, 5000), (5100, 5000), from_node=7, to_node=8),
     ])
 
@@ -67,11 +67,44 @@ def test_route_between_points_part_way_along_links():
 
 def test_route_stays_on_one_track_when_ends_can_snap_to_either():
     graph = network()
-    # Snapped to different tracks, the only way is out to the crossover at x=2000 and back
-    assert graph.route(Snap("up1", 100), Snap("down", 900)).length == pytest.approx(900 + 1000 + 4 + 1100)
+    # Snapped to different tracks, the only way is out to the crossover at x=2000 and back, which would be a reversal
+    assert graph.route(Snap("up1", 100), Snap("down", 900)) is None
     # Given both tracks at each end, it stays on one
     both = graph.route([Snap("up1", 100), Snap("down", 100)], [Snap("down", 900), Snap("up1", 900)])
     assert both.length == pytest.approx(800)
+
+
+def test_route_never_reverses_at_a_junction():
+    # A main line east with a branch leaving it gently at x=1000 to the north-east, and a station on the branch
+    graph = TrackGraph([
+        link("west", (0, 0), (1000, 0), from_node=1, to_node=2),
+        link("east", (1000, 0), (2000, 0), from_node=2, to_node=3),
+        link("branch", (1000, 0), (1100, 20), (1500, 500), from_node=2, to_node=4),
+        link("chord", (1400, 0), (1600, 400), from_node=5, to_node=6),  # not joined up: no way round
+    ])
+    # From the main line east of the junction onto the branch is back the way it came: no route
+    assert graph.route(Snap("east", 500), Snap("branch", 300)) is None
+    # From the west it's a gentle turn
+    assert graph.route(Snap("west", 500), Snap("branch", 300)).length == pytest.approx(800)
+    # Either way along the main line is fine, and the moves are as they were afterwards
+    moves = graph.moves.number_of_nodes()
+    assert graph.route(Snap("east", 500), Snap("west", 500)).length == pytest.approx(1000)
+    assert graph.moves.number_of_nodes() == moves
+
+
+def test_a_route_that_turns_back_is_kept_only_when_barely_longer_than_straight():
+    # A station on a bay that leaves the main line at x=1000 heading back west alongside it: from the west, a train
+    # can only reach it by turning back at the points
+    graph = TrackGraph([
+        link("main", (0, 0), (1000, 0), from_node=1, to_node=2),
+        link("bay", (1000, 0), (900, 6), (0, 6), from_node=2, to_node=3),
+    ])
+    start = PlacedTiploc("AAA", (X + 100, Y), [Snap("main", 100)])
+    assert graph.route(start.snaps, [Snap("bay", 60)]) is None
+    near = segment_path(graph, start, PlacedTiploc("BAY", (X + 940, Y + 4), [Snap("bay", 60)]))
+    assert (near.method, near.fallback_reason) == ("track", "reverses")
+    far = segment_path(graph, start, PlacedTiploc("BAY", (X + 200, Y + 6), [Snap("bay", 800)]))
+    assert (far.method, far.fallback_reason) == ("straight", "detour")
 
 
 def test_segment_path_falls_back_to_a_straight_line():
@@ -85,8 +118,8 @@ def test_segment_path_falls_back_to_a_straight_line():
     assert (off_network.method, off_network.fallback_reason) == ("straight", "off_network")
     assert off_network.length == pytest.approx(off_network.straight) == pytest.approx(894.4, abs=0.1)
 
-    # 110 m apart in a straight line, but ~9 km round the loop
-    detour = segment_path(graph, start, PlacedTiploc("DDD", (X - 10, Y + 10), [Snap("loop", 7990)]))
+    # 112 m apart in a straight line, but ~10 km round the loop
+    detour = segment_path(graph, start, PlacedTiploc("DDD", (X - 10, Y + 22), [Snap("loop", 8170)]))
     assert (detour.method, detour.fallback_reason) == ("straight", "detour")
 
     no_path = segment_path(graph, start, PlacedTiploc("EEE", (X + 5050, Y + 5000), [Snap("siding", 50)]))

@@ -776,6 +776,10 @@ class Database:
         """, (day,))
         return self.cur.fetchall()
 
+    def fetch_segment_pairs(self) -> list[tuple[str, str]]:
+        self.cur.execute("SELECT from_tiploc, to_tiploc FROM segment_paths ORDER BY 1, 2")
+        return self.cur.fetchall()
+
     def fetch_placed_tiplocs(self, tiplocs, parallel_metres: float) -> list[tuple]:
         """
         (tiploc, easting, northing, snaps) where snaps is a list of (asset_id, along): the nearest track
