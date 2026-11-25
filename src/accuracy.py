@@ -27,7 +27,7 @@ from datetime import date, datetime, timedelta
 from itertools import pairwise
 
 from config import load_config
-from db import Database
+from db import OFF_TRACK_STATUSES, Database
 from frames import fraction_at, unpack
 from positions import (
     Journey,
@@ -218,7 +218,9 @@ def estimate_moments(journeys: list[Journey], paths, times: list[datetime]) -> I
         yield at, trains
 
 
-def measure(moments: Iterable[tuple[datetime, dict[str, dict]]], routes: dict[str, Route]) -> Tally:
+def measure(moments: Iterable[tuple[datetime, dict[str, dict]]], routes: dict[str, Route],
+            off_track: frozenset[str] = frozenset()) -> Tally:
+    """`off_track`: buses and ships, which have no route here."""
     tally = Tally()
     times = {rid: route.times for rid, route in routes.items()}
     for at, trains in moments:
@@ -234,7 +236,7 @@ def measure(moments: Iterable[tuple[datetime, dict[str, dict]]], routes: dict[st
             route = routes.get(rid)
             truth = route.truth(t, times[rid]) if route else None
             if truth is None:
-                tally.unknown[_why_unknown(route, t)] += 1
+                tally.unknown["bus or ship" if rid in off_track else _why_unknown(route, t)] += 1
                 continue
             drawn = route.drawn(train["from_tiploc"], train["to_tiploc"], train["fraction"], truth)
             if drawn is None:
@@ -333,14 +335,20 @@ def print_report(result: dict, label: str):
               f"  signed median {row['signed_median_m']:+8,} m  e.g. {row['example']}")
 
 
-def load_routes(db: Database, rids: list[str], paths, truth_offset: float) -> tuple[list[Journey], dict[str, Route]]:
+def load_routes(db: Database, rids: list[str], paths,
+                truth_offset: float) -> tuple[list[Journey], dict[str, Route], frozenset[str]]:
+    """The journeys asked for that run on the track and their routes, and the rids of those that don't."""
     journeys: dict[str, Journey] = {}
-    for rid, train_id, toc, cancelled, deactivated in db.fetch_journeys(rids):
+    off_track = set()
+    for rid, train_id, toc, cancelled, deactivated, status in db.fetch_journeys(rids):
         journeys[rid] = Journey(rid, [], train_id, toc, bool(cancelled), bool(deactivated))
+        if status in OFF_TRACK_STATUSES:
+            off_track.add(rid)
     for row in db.fetch_position_stops(list(journeys)):
         rid, tiploc, location_type, x, y, *times, cancelled = row
         journeys[rid].stops.append(Stop(tiploc, location_type, (x, y) if x is not None else None, *times, cancelled=cancelled))
-    return list(journeys.values()), {rid: build_route(j, paths, truth_offset) for rid, j in journeys.items()}
+    routes = {rid: build_route(j, paths, truth_offset) for rid, j in journeys.items() if rid not in off_track}
+    return [j for rid, j in journeys.items() if rid not in off_track], routes, frozenset(off_track)
 
 
 def window(day: date, start: str | None, end: str | None) -> tuple[datetime, datetime]:
@@ -376,7 +384,7 @@ def main(argv: list[str] | None = None, progress: Callable[[str], None] = print)
         rids = set(db.fetch_reported_rids(start, end))
         for _, _, _, data in frames:
             rids.update(train["rid"] for train in unpack(data)["trains"])
-        journeys, routes = load_routes(db, sorted(rids), paths, args.truth_offset)
+        journeys, routes, off_track = load_routes(db, sorted(rids), paths, args.truth_offset)
     finally:
         db.close()
     progress(f"Loaded {len(frames):,} frames and {len(routes):,} journeys in {time.perf_counter() - began:.1f} s")
@@ -385,7 +393,7 @@ def main(argv: list[str] | None = None, progress: Callable[[str], None] = print)
         moments = frame_moments(frames, times)
     else:
         moments = estimate_moments([j for j in journeys if service_status(j, end) != "cancelled"], paths, times)
-    tally = measure(moments, routes)
+    tally = measure(moments, routes, off_track)
     result = report(tally)
     result["run"] = {"day": args.day.isoformat(), "start": start.isoformat(), "end": end.isoformat(),
                      "every_s": args.every, "source": args.source, "truth_offset_s": args.truth_offset,

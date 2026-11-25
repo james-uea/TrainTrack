@@ -350,3 +350,10 @@ def test_a_timetable_batch_aborted_by_a_deadlock_is_run_again(db, monkeypatch):
     db.cur.execute("SELECT count(*) FROM train_stops WHERE rid = %s", (RID,))
     assert db.cur.fetchone() == (len(parse_schedule(SCHEDULE).stops),)
 
+
+
+def test_buses_and_ships_are_left_off_the_map(db):
+    bus = {**SCHEDULE, "rid": "202609058000002", "status": "B", "trainCat": "BR"}
+    ship = {**SCHEDULE, "rid": "202609058000003", "status": "4", "trainCat": "SS"}
+    db.add_schedules([parse_schedule(schedule) for schedule in (SCHEDULE, bus, ship)])
+    assert [row[0] for row in db.fetch_journeys_around(london(2026, 9, 5, 23, 50))] == [RID]
